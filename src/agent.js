@@ -160,6 +160,8 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
   const tools = ALLOWED_TOOLS.map((t) => `'${t}'`).join(' ');
   const runner = [
     'export PATH="/data/home/.insta/bin:/data/home/bin:$PATH"',
+    // Own pid, recorded before any work, so the job can be stopped later.
+    `echo $$ > ${dir}/pid`,
     `cd ${dir}`,
     // No `set -e`: a failing claude must still reach the next line, because
     // exit.code is what the poller waits for.
@@ -183,7 +185,7 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
     `printf '%s' '${taskB64}' | base64 -d > ${dir}/task.txt`,
     `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
     `printf '%s' '${ticket}' | base64 -d > ${dir}/slack.json`,
-    `nohup sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null &`,
+    `nohup setsid sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null &`,
     'echo started',
   ].join('\n');
 
@@ -270,4 +272,59 @@ export async function listUnreportedJobs(config, deps = {}) {
 export async function markReported(config, jobId, deps = {}) {
   const { run = execInBox } = deps;
   await run(config, `touch ${JOBS_ROOT}/${jobId}/reported`, { timeoutMs: 30000 });
+}
+
+/** Jobs still running: they carry a ticket and have not written an exit code. */
+export async function listRunningJobs(config, deps = {}) {
+  const { run = execInBox } = deps;
+  const script = [
+    `for d in ${JOBS_ROOT}/*/; do`,
+    `  [ -f "$d/slack.json" ] || continue`,
+    `  [ -f "$d/exit.code" ] && continue`,
+    `  cat "$d/slack.json"; echo`,
+    'done',
+  ].join('\n');
+
+  const { stdout } = await run(config, script, { timeoutMs: 60000 });
+  return stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Stops a running job. Kills the whole process group, because claude spawns
+ * children (bg-pty-host, subagents) that outlive their parent shell otherwise.
+ * Writes an exit code so the poller and any later boot see a finished job
+ * rather than waiting on one that will never report.
+ *
+ * 143 is 128+SIGTERM, the shell convention for "terminated", which is how
+ * describeResult tells a stop apart from a crash.
+ */
+export async function stopJob(config, jobId, deps = {}) {
+  const { run = execInBox } = deps;
+  const dir = `${JOBS_ROOT}/${jobId}`;
+  const script = [
+    `[ -d ${dir} ] || { echo "no such job"; exit 0; }`,
+    `[ -f ${dir}/exit.code ] && { echo "already finished"; exit 0; }`,
+    // Preferred: the recorded pid, killed as a group.
+    `if [ -f ${dir}/pid ]; then kill -TERM -"$(cat ${dir}/pid)" 2>/dev/null || kill -TERM "$(cat ${dir}/pid)" 2>/dev/null; fi`,
+    // Fallback for jobs started before pids were recorded: match the runner path.
+    `pkill -TERM -f "${dir}/run.sh" 2>/dev/null`,
+    `pkill -TERM -f "${dir}/task.txt" 2>/dev/null`,
+    `sleep 2`,
+    `echo 143 > ${dir}/exit.code`,
+    `echo stopped`,
+  ].join('\n');
+
+  const { stdout } = await run(config, script, { timeoutMs: 60000 });
+  return stdout.trim();
 }

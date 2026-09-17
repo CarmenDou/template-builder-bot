@@ -1,5 +1,5 @@
-import { parseCommand, findPrInThread, findJobIdInThread, renderThread } from './command.js';
-import { startJob, readJob, parseResult } from './agent.js';
+import { parseCommand, findPrInThread, findJobIdInThread, renderThread, isStopRequest } from './command.js';
+import { startJob, readJob, parseResult, listRunningJobs, stopJob } from './agent.js';
 import { fetchThread } from './slack.js';
 
 const HELP =
@@ -26,6 +26,10 @@ export function describeResult({ url, jobId, exitCode, result, log }) {
     return lines.join('\n');
   }
 
+  if (exitCode === 143) {
+    return `Job \`${jobId}\` for \`${url}\` was stopped. Anything it had already pushed is still there; nothing was reverted.`;
+  }
+
   // No RESULT block: report honestly rather than inventing an outcome.
   const tail = log ? `\n\`\`\`\n${log.slice(-1200)}\n\`\`\`` : '';
   return `Job \`${jobId}\` for \`${url}\` ended with exit code ${exitCode} but did not print a RESULT block, so I cannot tell you what it concluded. Last output:${tail}`;
@@ -41,7 +45,20 @@ export function describeTimeout({ url, jobId, log }) {
  * non-null only when work actually started.
  */
 export async function handleMention({ event, config, deps = {} }) {
-  const { start = startJob, thread = fetchThread, read = readJob } = deps;
+  const {
+    start = startJob,
+    thread = fetchThread,
+    read = readJob,
+    running = listRunningJobs,
+    stop = stopJob,
+  } = deps;
+
+  // Two agents on one PR both push to the same branch and both rewrite the body,
+  // so the slower one silently overwrites the better one. Refuse instead.
+  const alreadyOn = async (subject) => {
+    const jobs = await running(config).catch(() => []);
+    return jobs.find((j) => j.url === subject) ?? null;
+  };
   const slack = { channel: event.channel, threadTs: event.thread_ts ?? event.ts };
 
   if (!config.allowedChannels.includes(event.channel)) {
@@ -50,9 +67,38 @@ export async function handleMention({ event, config, deps = {} }) {
     return { reply: null, job: null };
   }
 
+  // A stop is answered before any parsing of what to build: "stop #147" must
+  // never be read as "work on 147".
+  if (isStopRequest(event.text ?? '')) {
+    const jobs = await running(config).catch(() => []);
+    if (jobs.length === 0) return { reply: 'Nothing is running.', job: null };
+
+    const wanted = event.thread_ts
+      ? jobs.filter((j) => j.threadTs === event.thread_ts)
+      : jobs;
+    const targets = wanted.length > 0 ? wanted : jobs;
+
+    const results = [];
+    for (const j of targets) {
+      const outcome = await stop(config, j.jobId).catch((e) => `failed: ${e.message}`);
+      results.push(`\`${j.jobId}\` (${j.url}) — ${outcome}`);
+    }
+    return {
+      reply: `Stopped ${results.length === 1 ? 'it' : results.length + ' jobs'}:\n${results.join('\n')}\n\nAnything already pushed stays pushed; nothing is reverted.`,
+      job: null,
+    };
+  }
+
   const { kind, repos, pr, extra } = parseCommand(event.text ?? '');
 
   if (kind === 'followup') {
+    const busy = await alreadyOn(`PR #${pr}`);
+    if (busy) {
+      return {
+        reply: `Already working on PR #${pr} (job \`${busy.jobId}\`). Starting a second agent on it would have both push to the same branch and overwrite each other's PR body. Wait for that one to report, then send this again.`,
+        job: null,
+      };
+    }
     const { jobId } = await start(config, { pr, extra, slack });
     const label = `PR #${pr}`;
     return { reply: describeStart({ url: label, jobId, followup: true }), job: { jobId, url: label } };
@@ -81,6 +127,13 @@ export async function handleMention({ event, config, deps = {} }) {
         }
       }
       if (threadPr) {
+        const busy = await alreadyOn(`PR #${threadPr}`);
+        if (busy) {
+          return {
+            reply: `Already working on PR #${threadPr} (job \`${busy.jobId}\`). Wait for it to report before sending more, or the two agents overwrite each other.`,
+            job: null,
+          };
+        }
         const context = renderThread(messages, { botUserId: config.botUserId });
         const { jobId } = await start(config, {
           pr: threadPr,
@@ -104,6 +157,13 @@ export async function handleMention({ event, config, deps = {} }) {
   }
 
   const { url } = repos[0];
+  const busy = await alreadyOn(url);
+  if (busy) {
+    return {
+      reply: `Already templating \`${url}\` (job \`${busy.jobId}\`). Wait for that one to finish rather than racing a second agent onto the same branch.`,
+      job: null,
+    };
+  }
   const { jobId } = await start(config, { url, extra, slack });
   return { reply: describeStart({ url, jobId }), job: { jobId, url } };
 }

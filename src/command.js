@@ -120,3 +120,12 @@ export function findJobIdInThread(messages) {
   }
   return found;
 }
+
+/**
+ * True when the message is asking to stop work rather than to do some. Checked
+ * before anything else, so "stop #147" is a stop and not a follow-up on 147.
+ */
+export function isStopRequest(text) {
+  const cleaned = stripMention(text).trim().toLowerCase();
+  return /^(stop|cancel|abort|halt)\b/.test(cleaned);
+}

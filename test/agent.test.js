@@ -78,7 +78,10 @@ test('startJob launches with nohup and writes an exit code afterwards', async ()
 
   assert.equal(jobId, 'J1');
   assert.equal(dir, '/data/work/jobs/J1');
-  assert.match(script, /nohup sh \S+run\.sh/, 'must survive the exec channel closing');
+  assert.match(script, /nohup setsid sh \S+run\.sh/, 'setsid so one kill reaches the whole job');
+
+  const runnerText = runnerOf(script);
+  assert.match(runnerText, /echo \$\$ > \S+pid/, 'records its pid so it can be stopped');
 
   const runner = runnerOf(script);
   assert.match(runner, /exit\.code/, 'completion signal must be written');
