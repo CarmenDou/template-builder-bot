@@ -1,0 +1,39 @@
+import { parseList } from './command.js';
+
+const REQUIRED = [
+  'SLACK_SIGNING_SECRET',
+  'SLACK_BOT_TOKEN',
+  'ALLOWED_CHANNELS',
+  'INSTA_API_KEY',
+  'AGENT_PROJECT_ID',
+];
+
+export function loadConfig(env = process.env) {
+  const missing = REQUIRED.filter((name) => !env[name]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missing.join(', ')}. ` +
+        'ALLOWED_CHANNELS is the only thing standing between Slack and an agent ' +
+        'that can push branches and deploy, so the bot refuses to start without it.',
+    );
+  }
+
+  return {
+    slackSigningSecret: env.SLACK_SIGNING_SECRET,
+    slackBotToken: env.SLACK_BOT_TOKEN,
+    allowedChannels: parseList(env.ALLOWED_CHANNELS),
+
+    // How the bot reaches the agent box
+    instaApiKey: env.INSTA_API_KEY,
+    instaBin: env.INSTA_BIN ?? 'insta',
+    agentProjectId: env.AGENT_PROJECT_ID,
+    agentService: env.AGENT_SERVICE ?? 'claude-code',
+
+    // A job that has not finished by then is reported as stuck rather than
+    // silently left running; the agent itself is not killed.
+    jobTimeoutMs: Number(env.JOB_TIMEOUT_MS ?? 45 * 60 * 1000),
+    pollIntervalMs: Number(env.POLL_INTERVAL_MS ?? 20 * 1000),
+
+    port: Number(env.PORT ?? 8080),
+  };
+}

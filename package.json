@@ -1,0 +1,14 @@
+{
+  "name": "template-builder-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mention the bot with a GitHub URL and it drives the template-builder agent to a draft PR",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test 'test/*.test.js'"
+  }
+}
