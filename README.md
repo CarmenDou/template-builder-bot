@@ -51,6 +51,33 @@ that are wrong.
 
 A failed post never ends the watch. The final report matters more than any one progress line.
 
+## Why nothing important lives in memory
+
+Two things used to, and both broke the same way.
+
+**Job tracking.** The watch loop was a promise in the process. Redeploying the bot while two jobs
+were running killed both watchers; the agents kept working, wrote their exit codes, and nobody was
+listening. Each job now carries a `slack.json` ticket next to it on the volume, and the bot scans
+for unreported tickets at boot and re-attaches. A `reported` marker stops a later restart from
+answering twice.
+
+**Which PR a conversation is about.** Threads are convenient but fragile: a different channel, a
+restarted bot, a conversation resumed days later all lose them. So a follow-up is resolved in three
+steps, cheapest first:
+
+1. a PR number or PR link in the message
+2. a PR link anywhere in the thread, usually the bot's own earlier reply
+3. the job id from the bot's "On it", read back off the volume for its RESULT block
+
+Step 3 exists because step 2 failed in practice: a redeploy killed a watcher, the final report with
+the PR link never reached the thread, and a follow-up there had nothing to find. The job id was
+still sitting in the thread the whole time.
+
+If none of the three resolve, the bot says what it accepts rather than guessing a number.
+
+Reading a thread needs the `channels:history` scope. Without it the bot degrades to the help text
+instead of failing, because losing context should make the reply worse, not break it.
+
 ## Safety boundaries
 
 - **Channel allowlist.** `ALLOWED_CHANNELS` is the only thing between Slack and an agent that can
