@@ -2,7 +2,7 @@ import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { handleMention, followJob } from './handler.js';
-import { ensureLogin } from './agent.js';
+import { ensureLogin, listUnreportedJobs, markReported } from './agent.js';
 import { postMessage, verifySlackSignature } from './slack.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -42,8 +42,40 @@ function log(fields) {
   console.log(JSON.stringify({ at: new Date().toISOString(), ...fields }));
 }
 
+/**
+ * Picks up jobs whose watcher died with a previous process. The agent keeps
+ * running on the box when the bot restarts, so without this a job finishes with
+ * nobody listening and the requester is left waiting forever.
+ */
+export async function resumeOrphanedJobs(config, deps = {}) {
+  const {
+    list = listUnreportedJobs,
+    follow = followJob,
+    post = postMessage,
+    mark = markReported,
+  } = deps;
+
+  const orphans = await list(config).catch((error) => {
+    log({ status: 'resume_scan_failed', error: error.message });
+    return [];
+  });
+
+  for (const o of orphans) {
+    if (!o?.jobId || !o?.channel) continue;
+    log({ status: 'resuming', job: o.jobId, url: o.url });
+    const say = (text) =>
+      post({ token: config.slackBotToken, channel: o.channel, threadTs: o.threadTs, text });
+    // Deliberately not awaited: one slow job must not hold up the others or the listener.
+    follow({ config, job: { jobId: o.jobId, url: o.url }, say })
+      .then((report) => say(report))
+      .then(() => mark(config, o.jobId))
+      .catch((error) => log({ status: 'resume_failed', job: o.jobId, error: error.message }));
+  }
+  return orphans.length;
+}
+
 export function createServer(config, deps = {}) {
-  const { post = postMessage, mention = handleMention, follow = followJob } = deps;
+  const { post = postMessage, mention = handleMention, follow = followJob, mark = markReported } = deps;
 
   return http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
@@ -132,6 +164,7 @@ export function createServer(config, deps = {}) {
     try {
       const report = await follow({ config, job, say });
       await say(report);
+      await mark(config, job.jobId).catch(() => {});
       log({ status: 'job_reported', job: job.jobId });
     } catch (error) {
       log({ status: 'follow_failed', job: job.jobId, error: error.message });
@@ -152,7 +185,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       log({ status: 'insta_login_failed', error: error.message });
       process.exit(1);
     })
-    .then(() => {
+    .then(() => resumeOrphanedJobs(config))
+    .then((n) => {
+      if (n) log({ status: 'resumed', jobs: n });
       createServer(config).listen(config.port, () => {
         log({
           status: 'listening',

@@ -144,7 +144,7 @@ export async function ensureLogin(config, run = execInsta) {
 /**
  * Starts the agent and returns as soon as it is running. Does NOT wait for it.
  */
-export async function startJob(config, { url, pr, extra }, deps = {}) {
+export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
   const { run = execInBox, jobId = newJobId() } = deps;
   const dir = `${JOBS_ROOT}/${jobId}`;
   const task = pr ? buildFollowupTask({ pr, extra, dir }) : buildTask({ url, extra, dir });
@@ -169,11 +169,20 @@ export async function startJob(config, { url, pr, extra }, deps = {}) {
   ].join('\n');
   const runnerB64 = Buffer.from(runner, 'utf8').toString('base64');
 
+  // Who to answer, written next to the job. The bot's own memory does not
+  // survive a redeploy, and the agent keeps running when the bot restarts, so a
+  // job whose thread lived only in memory finishes with nobody listening.
+  const ticket = Buffer.from(
+    JSON.stringify({ jobId, url: url ?? (pr ? `PR #${pr}` : 'unknown'), ...slack }),
+    'utf8',
+  ).toString('base64');
+
   const script = [
     'set -e',
     `mkdir -p ${dir}`,
     `printf '%s' '${taskB64}' | base64 -d > ${dir}/task.txt`,
     `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
+    `printf '%s' '${ticket}' | base64 -d > ${dir}/slack.json`,
     `nohup sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null &`,
     'echo started',
   ].join('\n');
@@ -226,4 +235,39 @@ export function parseResult(log) {
     pr: field('pr'),
     asks: field('asks'),
   };
+}
+
+/**
+ * Jobs that carry a Slack ticket and have not been reported yet. Used at boot to
+ * re-attach to work that outlived the bot process.
+ */
+export async function listUnreportedJobs(config, deps = {}) {
+  const { run = execInBox } = deps;
+  const script = [
+    `for d in ${JOBS_ROOT}/*/; do`,
+    `  [ -f "$d/slack.json" ] || continue`,
+    `  [ -f "$d/reported" ] && continue`,
+    `  cat "$d/slack.json"; echo`,
+    'done',
+  ].join('\n');
+
+  const { stdout } = await run(config, script, { timeoutMs: 60000 });
+  return stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+/** Marks a job reported so a later restart does not answer it twice. */
+export async function markReported(config, jobId, deps = {}) {
+  const { run = execInBox } = deps;
+  await run(config, `touch ${JOBS_ROOT}/${jobId}/reported`, { timeoutMs: 30000 });
 }

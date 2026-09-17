@@ -41,6 +41,7 @@ export function describeTimeout({ url, jobId, log }) {
  */
 export async function handleMention({ event, config, deps = {} }) {
   const { start = startJob } = deps;
+  const slack = { channel: event.channel, threadTs: event.thread_ts ?? event.ts };
 
   if (!config.allowedChannels.includes(event.channel)) {
     // Silence rather than a refusal message: a bot that answers in channels it
@@ -51,7 +52,7 @@ export async function handleMention({ event, config, deps = {} }) {
   const { kind, repos, pr, extra } = parseCommand(event.text ?? '');
 
   if (kind === 'followup') {
-    const { jobId } = await start(config, { pr, extra });
+    const { jobId } = await start(config, { pr, extra, slack });
     const label = `PR #${pr}`;
     return { reply: describeStart({ url: label, jobId, followup: true }), job: { jobId, url: label } };
   }
@@ -65,7 +66,7 @@ export async function handleMention({ event, config, deps = {} }) {
   }
 
   const { url } = repos[0];
-  const { jobId } = await start(config, { url, extra });
+  const { jobId } = await start(config, { url, extra, slack });
   return { reply: describeStart({ url, jobId }), job: { jobId, url } };
 }
 
