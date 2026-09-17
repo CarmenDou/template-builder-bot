@@ -144,15 +144,20 @@ export async function followJob({ config, job, say, deps = {} }) {
     }
 
     if (last.done) {
-      return describeResult({
-        url: job.url,
-        jobId: job.jobId,
-        exitCode: last.exitCode,
-        result: parseResult(last.log ?? ''),
-        log: last.log,
-      });
+      return {
+        finished: true,
+        text: describeResult({
+          url: job.url,
+          jobId: job.jobId,
+          exitCode: last.exitCode,
+          result: parseResult(last.log ?? ''),
+          log: last.log,
+        }),
+      };
     }
   }
 
-  return describeTimeout({ url: job.url, jobId: job.jobId, log: last.log });
+  // Not finished, just out of patience. The caller must NOT mark this job
+  // answered: the agent is still working and its real result is still coming.
+  return { finished: false, text: describeTimeout({ url: job.url, jobId: job.jobId, log: last.log }) };
 }

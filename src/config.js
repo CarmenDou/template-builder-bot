@@ -29,9 +29,12 @@ export function loadConfig(env = process.env) {
     agentProjectId: env.AGENT_PROJECT_ID,
     agentService: env.AGENT_SERVICE ?? 'claude-code',
 
-    // A job that has not finished by then is reported as stuck rather than
-    // silently left running; the agent itself is not killed.
-    jobTimeoutMs: Number(env.JOB_TIMEOUT_MS ?? 45 * 60 * 1000),
+    // A job past this is reported as still running rather than silently left
+    // going; the agent itself is never killed. 90 minutes because a thin-shell
+    // job legitimately takes an hour: CI rebuild, a 400MB image pull, deploy,
+    // verify, and often a revert plus a second deploy. The first version used
+    // 45 and reported a timeout four minutes before the job actually finished.
+    jobTimeoutMs: Number(env.JOB_TIMEOUT_MS ?? 90 * 60 * 1000),
     pollIntervalMs: Number(env.POLL_INTERVAL_MS ?? 20 * 1000),
 
     port: Number(env.PORT ?? 8080),

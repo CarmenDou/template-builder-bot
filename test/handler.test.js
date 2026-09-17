@@ -82,7 +82,7 @@ test('a failure to post a stage does not end the watch', async () => {
     { done: true, exitCode: 0, stages: ['triage: out'], log: 'RESULT\nverdict: out' },
   ];
   let i = 0;
-  const text = await followJob({
+  const { text } = await followJob({
     config,
     job: { jobId: 'J9', url: 'u' },
     say: async () => {
@@ -99,7 +99,7 @@ test('reports the result once the job finishes', async () => {
     exitCode: 0,
     log: 'RESULT\nverdict: directly-usable\npr: https://example.com/pr/1\nservice: https://svc.example.com\nproject: p1\nasks: none',
   });
-  const text = await followJob({
+  const { text } = await followJob({
     config,
     job: { jobId: 'J9', url: 'https://github.com/a/b' },
     deps: { read, sleep: async () => {} },
@@ -111,7 +111,7 @@ test('reports the result once the job finishes', async () => {
 
 test('says plainly when the agent finished without a RESULT block', async () => {
   const read = async () => ({ done: true, exitCode: 1, log: 'it crashed somewhere' });
-  const text = await followJob({
+  const { text } = await followJob({
     config,
     job: { jobId: 'J9', url: 'https://github.com/a/b' },
     deps: { read, sleep: async () => {} },
@@ -128,7 +128,7 @@ test('a dropped exec channel does not end the watch', async () => {
     if (calls < 3) throw new Error('exec channel dropped');
     return { done: true, exitCode: 0, log: 'RESULT\nverdict: out' };
   };
-  const text = await followJob({
+  const { text } = await followJob({
     config,
     job: { jobId: 'J9', url: 'https://github.com/a/b' },
     deps: { read, sleep: async () => {} },
@@ -139,7 +139,7 @@ test('a dropped exec channel does not end the watch', async () => {
 
 test('a timeout is reported as still running, not as failure', async () => {
   let t = 0;
-  const text = await followJob({
+  const { text } = await followJob({
     config,
     job: { jobId: 'J9', url: 'https://github.com/a/b' },
     deps: {
@@ -168,4 +168,26 @@ test('describeResult omits links the agent did not provide', () => {
 test('describeTimeout never claims the job failed', () => {
   const text = describeTimeout({ url: 'u', jobId: 'J1', log: 'tail' });
   assert.ok(!/failed/i.test(text));
+});
+
+test('followJob distinguishes finishing from running out of patience', async () => {
+  const done = await followJob({
+    config,
+    job: { jobId: 'J9', url: 'u' },
+    deps: { read: async () => ({ done: true, exitCode: 0, stages: [], log: 'RESULT\nverdict: out' }), sleep: async () => {} },
+  });
+  assert.equal(done.finished, true);
+
+  let t = 0;
+  const timedOut = await followJob({
+    config,
+    job: { jobId: 'J9', url: 'u' },
+    deps: {
+      read: async () => ({ done: false, exitCode: null, stages: [], log: 'still going' }),
+      sleep: async () => {},
+      now: () => (t += 400),
+    },
+  });
+  assert.equal(timedOut.finished, false, 'a timeout is not a result');
+  assert.match(timedOut.text, /NOT been killed/);
 });

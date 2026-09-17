@@ -67,8 +67,8 @@ export async function resumeOrphanedJobs(config, deps = {}) {
       post({ token: config.slackBotToken, channel: o.channel, threadTs: o.threadTs, text });
     // Deliberately not awaited: one slow job must not hold up the others or the listener.
     follow({ config, job: { jobId: o.jobId, url: o.url }, say })
-      .then((report) => say(report))
-      .then(() => mark(config, o.jobId))
+      .then(({ finished, text }) => say(text).then(() => finished))
+      .then((finished) => (finished ? mark(config, o.jobId) : null))
       .catch((error) => log({ status: 'resume_failed', job: o.jobId, error: error.message }));
   }
   return orphans.length;
@@ -162,10 +162,12 @@ export function createServer(config, deps = {}) {
     log({ status: 'job_started', job: job.jobId, url: job.url });
 
     try {
-      const report = await follow({ config, job, say });
-      await say(report);
-      await mark(config, job.jobId).catch(() => {});
-      log({ status: 'job_reported', job: job.jobId });
+      const { finished, text } = await follow({ config, job, say });
+      await say(text);
+      // Only a finished job is answered. A timed-out one keeps its ticket so the
+      // next boot picks it up and delivers the result that did eventually arrive.
+      if (finished) await mark(config, job.jobId).catch(() => {});
+      log({ status: finished ? 'job_reported' : 'job_timed_out', job: job.jobId });
     } catch (error) {
       log({ status: 'follow_failed', job: job.jobId, error: error.message });
       await say(

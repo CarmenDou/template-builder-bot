@@ -72,7 +72,7 @@ test('resume re-attaches to an orphan and answers its thread', async () => {
   const marked = [];
   const n = await resumeOrphanedJobs(config, {
     list: async () => [{ jobId: 'J1', channel: 'C1', threadTs: '1', url: 'u' }],
-    follow: async () => 'the job finished while you were away',
+    follow: async () => ({ finished: true, text: 'the job finished while you were away' }),
     post: async ({ channel, threadTs, text }) => said.push({ channel, threadTs, text }),
     mark: async (_c, id) => marked.push(id),
   });
@@ -88,7 +88,7 @@ test('a ticket with no channel is ignored rather than posted into the void', asy
   let posted = 0;
   await resumeOrphanedJobs(config, {
     list: async () => [{ jobId: 'J1' }],
-    follow: async () => 'x',
+    follow: async () => ({ finished: true, text: 'x' }),
     post: async () => posted++,
     mark: async () => {},
   });
@@ -105,7 +105,7 @@ test('one orphan that throws does not stop the others', async () => {
     ],
     follow: async ({ job }) => {
       if (job.jobId === 'bad') throw new Error('gone');
-      return 'good finished';
+      return { finished: true, text: 'good finished' };
     },
     post: async ({ text }) => said.push(text),
     mark: async () => {},
@@ -121,9 +121,35 @@ test('a failed scan boots the bot anyway', async () => {
     list: async () => {
       throw new Error('exec channel down');
     },
-    follow: async () => 'x',
+    follow: async () => ({ finished: true, text: 'x' }),
     post: async () => {},
     mark: async () => {},
   });
   assert.equal(n, 0);
+});
+
+test('a timed-out job keeps its ticket so a later boot can still answer it', async () => {
+  // Observed 2026-09-17: the bot reported a timeout at 45 minutes and the job
+  // finished four minutes later. Marking it answered threw that result away.
+  const marked = [];
+  await resumeOrphanedJobs(config, {
+    list: async () => [{ jobId: 'J1', channel: 'C1', threadTs: '1', url: 'u' }],
+    follow: async () => ({ finished: false, text: 'still running past the timeout' }),
+    post: async () => {},
+    mark: async (_c, id) => marked.push(id),
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(marked, [], 'a job that did not finish must stay unanswered');
+});
+
+test('a finished job is marked so it is not answered twice', async () => {
+  const marked = [];
+  await resumeOrphanedJobs(config, {
+    list: async () => [{ jobId: 'J1', channel: 'C1', threadTs: '1', url: 'u' }],
+    follow: async () => ({ finished: true, text: 'done' }),
+    post: async () => {},
+    mark: async (_c, id) => marked.push(id),
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(marked, ['J1']);
 });
