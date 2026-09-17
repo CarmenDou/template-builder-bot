@@ -72,3 +72,35 @@ export function parseCommand(text) {
   const extra = cleaned.replace(GITHUB_URL, ' ').replace(/\s+/g, ' ').trim();
   return { kind: repos.length > 0 ? 'new' : 'none', repos, pr: null, extra };
 }
+
+/**
+ * The PR this thread is about, read from the messages themselves. The bot's own
+ * earlier reply carries the link, so a human can say "change the model" with no
+ * number and still be understood.
+ * Takes the LAST one mentioned: a thread that moved on to a second PR is about
+ * the second one.
+ */
+export function findPrInThread(messages) {
+  let found = null;
+  for (const m of messages ?? []) {
+    const text = unwrapSlackLinks(m?.text ?? '');
+    for (const match of text.matchAll(/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/(\d+)/g)) {
+      found = Number(match[1]);
+    }
+  }
+  return found;
+}
+
+/** The thread as plain text for the agent, newest last, bot lines labelled. */
+export function renderThread(messages, { botUserId, max = 4000 } = {}) {
+  const lines = (messages ?? [])
+    .map((m) => {
+      const who = m?.bot_id || (botUserId && m?.user === botUserId) ? 'bot' : 'human';
+      const text = stripMention(m?.text ?? '').replace(/\s+/g, ' ').trim();
+      return text ? `${who}: ${text}` : null;
+    })
+    .filter(Boolean);
+
+  const joined = lines.join('\n');
+  return joined.length > max ? joined.slice(-max) : joined;
+}

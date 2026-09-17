@@ -1,5 +1,6 @@
-import { parseCommand } from './command.js';
+import { parseCommand, findPrInThread, renderThread } from './command.js';
 import { startJob, readJob, parseResult } from './agent.js';
+import { fetchThread } from './slack.js';
 
 const HELP =
   'Give me a GitHub repository URL and I will try to turn it into an InstaCloud template ' +
@@ -40,7 +41,7 @@ export function describeTimeout({ url, jobId, log }) {
  * non-null only when work actually started.
  */
 export async function handleMention({ event, config, deps = {} }) {
-  const { start = startJob } = deps;
+  const { start = startJob, thread = fetchThread } = deps;
   const slack = { channel: event.channel, threadTs: event.thread_ts ?? event.ts };
 
   if (!config.allowedChannels.includes(event.channel)) {
@@ -57,7 +58,33 @@ export async function handleMention({ event, config, deps = {} }) {
     return { reply: describeStart({ url: label, jobId, followup: true }), job: { jobId, url: label } };
   }
 
-  if (kind === 'none') return { reply: HELP, job: null };
+  if (kind === 'none') {
+    // Nothing actionable in the message itself. If this is a reply inside a
+    // thread, the thread probably names the PR and carries what "as discussed
+    // above" refers to, so read it before giving up.
+    if (event.thread_ts) {
+      const { messages } = await thread({
+        token: config.slackBotToken,
+        channel: event.channel,
+        threadTs: event.thread_ts,
+      });
+      const threadPr = findPrInThread(messages);
+      if (threadPr) {
+        const context = renderThread(messages, { botUserId: config.botUserId });
+        const { jobId } = await start(config, {
+          pr: threadPr,
+          extra: extra ? `${extra}\n\nThe thread this came from:\n${context}` : context,
+          slack,
+        });
+        const label = `PR #${threadPr}`;
+        return {
+          reply: describeStart({ url: label, jobId, followup: true }),
+          job: { jobId, url: label },
+        };
+      }
+    }
+    return { reply: HELP, job: null };
+  }
   if (repos.length > 1) {
     return {
       reply: `I see ${repos.length} repositories in that message. Send them one at a time so each gets its own PR.`,
