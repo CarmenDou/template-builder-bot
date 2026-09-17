@@ -104,3 +104,19 @@ export function renderThread(messages, { botUserId, max = 4000 } = {}) {
   const joined = lines.join('\n');
   return joined.length > max ? joined.slice(-max) : joined;
 }
+
+/**
+ * The job id the bot announced in this thread. Every "On it" carries one, so a
+ * thread whose final report never arrived (a bot restart, a Slack failure) can
+ * still be traced back to the work through the job itself.
+ * Takes the LAST one: a thread with several jobs is about the newest.
+ */
+export function findJobIdInThread(messages) {
+  let found = null;
+  for (const m of messages ?? []) {
+    for (const match of String(m?.text ?? '').matchAll(/\b(\d{14}-[0-9a-f]{6})\b/g)) {
+      found = match[1];
+    }
+  }
+  return found;
+}

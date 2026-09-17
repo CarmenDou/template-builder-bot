@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findPrInThread, renderThread } from '../src/command.js';
+import { findPrInThread, findJobIdInThread, renderThread } from '../src/command.js';
 import { fetchThread } from '../src/slack.js';
 import { handleMention } from '../src/handler.js';
 
@@ -149,4 +149,82 @@ test('fetchThread survives a network failure', async () => {
   });
   assert.deepEqual(out.messages, []);
   assert.match(out.error, /socket hang up/);
+});
+
+test('finds the job id the bot announced', () => {
+  const messages = [
+    msg('<@U1> https://github.com/elie222/rakazo'),
+    msg('On it: https://github.com/elie222/rakazo\nJob 20260917212138-9ed1df. Triage first...', { bot_id: 'B1' }),
+  ];
+  assert.equal(findJobIdInThread(messages), '20260917212138-9ed1df');
+});
+
+test('a thread with several jobs is about the newest one', () => {
+  const messages = [
+    msg('Job 20260917120000-aaaaaa', { bot_id: 'B1' }),
+    msg('Job 20260917212138-9ed1df', { bot_id: 'B1' }),
+  ];
+  assert.equal(findJobIdInThread(messages), '20260917212138-9ed1df');
+});
+
+test('no job id anywhere yields null', () => {
+  assert.equal(findJobIdInThread([msg('hello')]), null);
+  assert.equal(findJobIdInThread([]), null);
+});
+
+test('when the PR link never reached the thread, the job id still finds it', async () => {
+  // Exactly what happened on 2026-09-17: a redeploy killed the watcher, so the
+  // thread only ever saw "On it" and never the PR link.
+  let started = null;
+  const out = await handleMention({
+    event: { channel: 'C_OK', text: '<@U1> chat does depend on the sandbox', ts: '3', thread_ts: '1' },
+    config,
+    deps: {
+      thread: async () => ({
+        messages: [
+          msg('On it: https://github.com/elie222/rakazo\nJob 20260917212138-9ed1df.', { bot_id: 'B1' }),
+          msg('chat does depend on the sandbox'),
+        ],
+        error: null,
+      }),
+      read: async (_c, jobId) => {
+        assert.equal(jobId, '20260917212138-9ed1df');
+        return { done: true, exitCode: 0, stages: [], log: 'RESULT\nverdict: thin-shell\npr: https://github.com/InsForge/instacloud-oss/pull/147' };
+      },
+      start: async (_c, req) => {
+        started = req;
+        return { jobId: 'JT9' };
+      },
+    },
+  });
+  assert.equal(started.pr, 147, 'recovered the PR through the job, not the thread');
+  assert.match(out.reply, /Picking PR #147 back up/);
+});
+
+test('an unreadable job degrades to the help text rather than guessing', async () => {
+  const out = await handleMention({
+    event: { channel: 'C_OK', text: '<@U1> change it', ts: '3', thread_ts: '1' },
+    config,
+    deps: {
+      thread: async () => ({ messages: [msg('Job 20260917212138-9ed1df', { bot_id: 'B1' })], error: null }),
+      read: async () => {
+        throw new Error('box unreachable');
+      },
+      start: async () => assert.fail('must not start work'),
+    },
+  });
+  assert.match(out.reply, /GitHub repository URL/);
+});
+
+test('a job that finished without a PR is not turned into one', async () => {
+  const out = await handleMention({
+    event: { channel: 'C_OK', text: '<@U1> change it', ts: '3', thread_ts: '1' },
+    config,
+    deps: {
+      thread: async () => ({ messages: [msg('Job 20260917212138-9ed1df', { bot_id: 'B1' })], error: null }),
+      read: async () => ({ done: true, exitCode: 0, stages: [], log: 'RESULT\nverdict: out\npr: none' }),
+      start: async () => assert.fail('must not start work'),
+    },
+  });
+  assert.match(out.reply, /GitHub repository URL/);
 });

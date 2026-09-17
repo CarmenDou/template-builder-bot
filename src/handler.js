@@ -1,4 +1,4 @@
-import { parseCommand, findPrInThread, renderThread } from './command.js';
+import { parseCommand, findPrInThread, findJobIdInThread, renderThread } from './command.js';
 import { startJob, readJob, parseResult } from './agent.js';
 import { fetchThread } from './slack.js';
 
@@ -41,7 +41,7 @@ export function describeTimeout({ url, jobId, log }) {
  * non-null only when work actually started.
  */
 export async function handleMention({ event, config, deps = {} }) {
-  const { start = startJob, thread = fetchThread } = deps;
+  const { start = startJob, thread = fetchThread, read = readJob } = deps;
   const slack = { channel: event.channel, threadTs: event.thread_ts ?? event.ts };
 
   if (!config.allowedChannels.includes(event.channel)) {
@@ -68,7 +68,18 @@ export async function handleMention({ event, config, deps = {} }) {
         channel: event.channel,
         threadTs: event.thread_ts,
       });
-      const threadPr = findPrInThread(messages);
+      // The PR link is the cheap path. When the final report never made it to
+      // the thread, the job id in "On it" still leads to the same answer.
+      let threadPr = findPrInThread(messages);
+      if (!threadPr) {
+        const jobId = findJobIdInThread(messages);
+        if (jobId) {
+          const state = await read(config, jobId).catch(() => null);
+          const prUrl = parseResult(state?.log ?? '')?.pr;
+          const m = prUrl?.match(/\/pull\/(\d+)/);
+          if (m) threadPr = Number(m[1]);
+        }
+      }
       if (threadPr) {
         const context = renderThread(messages, { botUserId: config.botUserId });
         const { jobId } = await start(config, {
