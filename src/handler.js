@@ -69,14 +69,22 @@ export async function handleMention({ event, config, deps = {} }) {
   return { reply: describeStart({ url, jobId }), job: { jobId, url } };
 }
 
+/** One line the agent appended to stage.txt, rendered for the thread. */
+export function formatStage(line) {
+  return `• ${line}`;
+}
+
 /**
  * Polls until the agent writes its exit code, then returns the message to post.
+ * Posts each new stage line on the way, because a job runs for tens of minutes
+ * and silence is indistinguishable from a dead agent.
  * Never throws for job failure: a failed job is a report, not a crash.
  */
-export async function followJob({ config, job, deps = {} }) {
+export async function followJob({ config, job, say, deps = {} }) {
   const { read = readJob, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = () => Date.now() } = deps;
   const deadline = now() + config.jobTimeoutMs;
-  let last = { log: '' };
+  let last = { log: '', stages: [] };
+  let reported = 0;
 
   while (now() < deadline) {
     await sleep(config.pollIntervalMs);
@@ -86,6 +94,16 @@ export async function followJob({ config, job, deps = {} }) {
       // A dropped exec channel is expected on a busy box; keep polling.
       continue;
     }
+
+    // A failure to post progress must never end the watch: the final report
+    // matters more than any one update.
+    if (say && Array.isArray(last.stages)) {
+      for (const line of last.stages.slice(reported)) {
+        await say(formatStage(line)).catch(() => {});
+      }
+      reported = last.stages.length;
+    }
+
     if (last.done) {
       return describeResult({
         url: job.url,

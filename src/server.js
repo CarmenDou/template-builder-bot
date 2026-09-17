@@ -130,7 +130,7 @@ export function createServer(config, deps = {}) {
     log({ status: 'job_started', job: job.jobId, url: job.url });
 
     try {
-      const report = await follow({ config, job });
+      const report = await follow({ config, job, say });
       await say(report);
       log({ status: 'job_reported', job: job.jobId });
     } catch (error) {

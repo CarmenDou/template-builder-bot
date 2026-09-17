@@ -51,8 +51,26 @@ export function newJobId(now = Date.now(), rand = () => crypto.randomBytes(3).to
   return `${stamp}-${rand()}`;
 }
 
-export function buildTask({ url, extra }) {
+// A job runs for tens of minutes. Without this the requester gets one message at
+// the start and then silence, and cannot tell a long build from a dead agent.
+export function stageInstructions(dir) {
+  return `## Reporting progress
+
+Append ONE line to \`${dir}/stage.txt\` at each of these four moments, and only these four. Someone
+is watching from Slack and this file is the only way they know you are alive.
+
+    triage: <verdict> — one line of why
+    pr: <url> — what you are waiting on next
+    build: <green|red> — what happens next
+    verify: <what you actually proved, not what you ran>
+
+Append, never rewrite, and keep each to one line. Write the triage line before you start writing
+files, not after.`;
+}
+
+export function buildTask({ url, extra, dir }) {
   const hint = extra ? `\n\nExtra instructions from the requester: ${extra}` : '';
+  const stages = dir ? `\n\n${stageInstructions(dir)}` : '';
   return `Turn ${url} into an InstaCloud template.
 
 Follow your CLAUDE.md end to end: triage it against the five judgements, create a fresh project for
@@ -65,10 +83,11 @@ Finish your reply with a section headed RESULT containing, one per line:
   project: <project id, or none>
   service: <public URL, or none>
   pr: <PR url, or none>
-  asks: <what you need a human to settle, or none>${hint}`;
+  asks: <what you need a human to settle, or none>${hint}${stages}`;
 }
 
-export function buildFollowupTask({ pr, extra }) {
+export function buildFollowupTask({ pr, extra, dir }) {
+  const stages = dir ? `\n\n${stageInstructions(dir)}` : '';
   return `Keep working on the template in InsForge/instacloud-oss PR #${pr}.
 
 Recover the context from the PR itself rather than assuming anything: \`gh pr view ${pr} --json
@@ -87,7 +106,7 @@ Finish your reply with a section headed RESULT containing, one per line:
   project: <project id you verified in, or none>
   service: <public URL, or none>
   pr: https://github.com/InsForge/instacloud-oss/pull/${pr}
-  asks: <anything still needing a human, or none>`;
+  asks: <anything still needing a human, or none>${stages}`;
 }
 
 // argv, never a shell string, so a repo name can never become a command.
@@ -128,7 +147,7 @@ export async function ensureLogin(config, run = execInsta) {
 export async function startJob(config, { url, pr, extra }, deps = {}) {
   const { run = execInBox, jobId = newJobId() } = deps;
   const dir = `${JOBS_ROOT}/${jobId}`;
-  const task = pr ? buildFollowupTask({ pr, extra }) : buildTask({ url, extra });
+  const task = pr ? buildFollowupTask({ pr, extra, dir }) : buildTask({ url, extra, dir });
 
   // Both the task and the runner travel as base64 and land as files. Quoting a
   // runner inline does not survive: `sh -c '... --allowedTools 'Read' ...'` ends
@@ -168,17 +187,24 @@ export async function readJob(config, jobId, deps = {}) {
   const dir = `${JOBS_ROOT}/${jobId}`;
   const script = [
     `if [ -f ${dir}/exit.code ]; then echo "STATUS done $(cat ${dir}/exit.code)"; else echo "STATUS running"; fi`,
+    `echo "---STAGES---"`,
+    `cat ${dir}/stage.txt 2>/dev/null || true`,
     `echo "---LOG---"`,
     `tail -c 12000 ${dir}/out.log 2>/dev/null || true`,
   ].join('\n');
 
   const { stdout } = await run(config, script, { timeoutMs: 60000 });
-  const [head, ...rest] = stdout.split('---LOG---');
+  const [head, ...afterStages] = stdout.split('---STAGES---');
+  const [stageBlock, ...rest] = afterStages.join('---STAGES---').split('---LOG---');
   const statusLine = head.trim().split(/\s+/);
   const done = statusLine[1] === 'done';
   return {
     done,
     exitCode: done ? Number(statusLine[2]) : null,
+    stages: (stageBlock ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean),
     log: rest.join('---LOG---').trim(),
   };
 }

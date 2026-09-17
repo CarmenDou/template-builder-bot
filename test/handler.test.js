@@ -54,6 +54,45 @@ test('starts the job and says what will happen', async () => {
   assert.match(out.reply, /draft PR/i);
 });
 
+test('posts each new stage line exactly once as it appears', async () => {
+  // The whole point: a job runs for tens of minutes and silence looks like death.
+  const snapshots = [
+    { done: false, stages: ['triage: thin-shell — no HTTP face'], log: '' },
+    { done: false, stages: ['triage: thin-shell — no HTTP face'], log: '' },
+    { done: false, stages: ['triage: thin-shell — no HTTP face', 'pr: https://x/1 — waiting on CI'], log: '' },
+    { done: true, exitCode: 0, stages: ['triage: thin-shell — no HTTP face', 'pr: https://x/1 — waiting on CI'], log: 'RESULT\nverdict: thin-shell' },
+  ];
+  let i = 0;
+  const said = [];
+  await followJob({
+    config,
+    job: { jobId: 'J9', url: 'u' },
+    say: async (t) => said.push(t),
+    deps: { read: async () => snapshots[i++], sleep: async () => {} },
+  });
+  assert.deepEqual(said, [
+    '• triage: thin-shell — no HTTP face',
+    '• pr: https://x/1 — waiting on CI',
+  ], 'each stage posted once, the repeated snapshot posted nothing');
+});
+
+test('a failure to post a stage does not end the watch', async () => {
+  const snapshots = [
+    { done: false, stages: ['triage: out'], log: '' },
+    { done: true, exitCode: 0, stages: ['triage: out'], log: 'RESULT\nverdict: out' },
+  ];
+  let i = 0;
+  const text = await followJob({
+    config,
+    job: { jobId: 'J9', url: 'u' },
+    say: async () => {
+      throw new Error('slack down');
+    },
+    deps: { read: async () => snapshots[i++], sleep: async () => {} },
+  });
+  assert.match(text, /out/, 'the final report still arrives');
+});
+
 test('reports the result once the job finishes', async () => {
   const read = async () => ({
     done: true,

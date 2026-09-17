@@ -119,7 +119,7 @@ test('the task text reaches the box base64-encoded, never inline in the shell', 
 });
 
 test('readJob reports running while the exit code is absent', async () => {
-  const run = async () => ({ stdout: 'STATUS running\n---LOG---\nworking on it' });
+  const run = async () => ({ stdout: 'STATUS running\n---STAGES---\n---LOG---\nworking on it' });
   const state = await readJob(config, 'J1', { run });
   assert.equal(state.done, false);
   assert.equal(state.exitCode, null);
@@ -127,7 +127,7 @@ test('readJob reports running while the exit code is absent', async () => {
 });
 
 test('readJob reports done with the exit code once it lands', async () => {
-  const run = async () => ({ stdout: 'STATUS done 0\n---LOG---\nRESULT\nverdict: out' });
+  const run = async () => ({ stdout: 'STATUS done 0\n---STAGES---\n---LOG---\nRESULT\nverdict: out' });
   const state = await readJob(config, 'J1', { run });
   assert.equal(state.done, true);
   assert.equal(state.exitCode, 0);
@@ -135,8 +135,34 @@ test('readJob reports done with the exit code once it lands', async () => {
 });
 
 test('readJob keeps log content that itself contains the separator', async () => {
-  const run = async () => ({ stdout: 'STATUS done 0\n---LOG---\na\n---LOG---\nb' });
+  const run = async () => ({ stdout: 'STATUS done 0\n---STAGES---\n---LOG---\na\n---LOG---\nb' });
   const state = await readJob(config, 'J1', { run });
   assert.match(state.log, /a/);
   assert.match(state.log, /b/);
+});
+
+test('readJob returns the stage lines the agent has appended', async () => {
+  const run = async () => ({
+    stdout:
+      'STATUS running\n---STAGES---\ntriage: thin-shell — no HTTP face\npr: https://x/1 — waiting on CI\n---LOG---\n',
+  });
+  const state = await readJob(config, 'J1', { run });
+  assert.deepEqual(state.stages, [
+    'triage: thin-shell — no HTTP face',
+    'pr: https://x/1 — waiting on CI',
+  ]);
+  assert.equal(state.done, false);
+});
+
+test('no stage file yet means no stages, not a crash', async () => {
+  const run = async () => ({ stdout: 'STATUS running\n---STAGES---\n---LOG---\n' });
+  const state = await readJob(config, 'J1', { run });
+  assert.deepEqual(state.stages, []);
+});
+
+test('the task tells the agent where to append its stages', () => {
+  const task = buildTask({ url: 'https://github.com/a/b', dir: '/data/work/jobs/J1' });
+  assert.match(task, /\/data\/work\/jobs\/J1\/stage\.txt/);
+  assert.match(task, /triage:/);
+  assert.match(task, /Append, never rewrite/);
 });
