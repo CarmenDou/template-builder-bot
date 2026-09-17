@@ -22,7 +22,7 @@ test('stays silent in a channel it does not serve', async () => {
 
 test('explains itself when there is no url', async () => {
   const out = await handleMention({ event: mention('hello'), config, deps: {} });
-  assert.match(out.reply, /GitHub repository URL/);
+  assert.match(out.reply, /start a new template/);
   assert.equal(out.job, null);
 });
 

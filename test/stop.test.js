@@ -100,3 +100,19 @@ test('a stopped job reads as stopped, not as a mysterious failure', () => {
   assert.match(text, /was stopped/);
   assert.ok(!/did not print a RESULT block/.test(text), 'a stop is not a missing-result bug');
 });
+
+test('the help lists every command, including the ones added later', async () => {
+  // A command nobody can discover may as well not exist. This fails the moment
+  // a new one is added without documenting it.
+  const out = await handleMention({
+    event: ev('<@U1> what can you do'),
+    config,
+    deps: { running: async () => [] },
+  });
+
+  assert.match(out.reply, /start a new template/, 'the new-template command');
+  assert.match(out.reply, /change one I already drafted/, 'the follow-up command');
+  assert.match(out.reply, /stop/, 'the stop command');
+  assert.match(out.reply, /I read the thread for it/, 'the bare-reply shortcut');
+  assert.match(out.reply, /never publish/, 'says where its authority ends');
+});

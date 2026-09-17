@@ -2,10 +2,15 @@ import { parseCommand, findPrInThread, findJobIdInThread, renderThread, isStopRe
 import { startJob, readJob, parseResult, listRunningJobs, stopJob } from './agent.js';
 import { fetchThread } from './slack.js';
 
-const HELP =
-  'Give me a GitHub repository URL and I will try to turn it into an InstaCloud template ' +
-  'draft PR.\nExample: `@template-builder https://github.com/owner/repo`\n' +
-  'To change a template I already drafted, name its PR: `@template-builder #145 use the small model`';
+const HELP = [
+  'I turn a GitHub repository into an InstaCloud template draft PR. A human verifies it and decides whether to publish; I never publish.',
+  '',
+  '`@template-builder https://github.com/owner/repo` — start a new template',
+  '`@template-builder #145 use the small model` — change one I already drafted',
+  '`@template-builder stop` — stop what is running (already pushed work stays pushed)',
+  '',
+  'Inside a thread I already replied in, you can leave the number out: I read the thread for it.',
+].join('\n');
 
 export function describeStart({ url, jobId, followup = false }) {
   if (followup) {

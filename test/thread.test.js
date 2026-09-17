@@ -95,7 +95,7 @@ test('a thread with no PR still just explains itself', async () => {
       start: async () => assert.fail('must not start work'),
     },
   });
-  assert.match(out.reply, /GitHub repository URL/);
+  assert.match(out.reply, /start a new template/);
   assert.equal(out.job, null);
 });
 
@@ -108,7 +108,7 @@ test('a missing channels:history scope degrades to the help text, not a crash', 
       start: async () => assert.fail('must not start work'),
     },
   });
-  assert.match(out.reply, /GitHub repository URL/);
+  assert.match(out.reply, /start a new template/);
 });
 
 test('an explicit PR number wins over whatever the thread says', async () => {
@@ -213,7 +213,7 @@ test('an unreadable job degrades to the help text rather than guessing', async (
       start: async () => assert.fail('must not start work'),
     },
   });
-  assert.match(out.reply, /GitHub repository URL/);
+  assert.match(out.reply, /start a new template/);
 });
 
 test('a job that finished without a PR is not turned into one', async () => {
@@ -226,5 +226,5 @@ test('a job that finished without a PR is not turned into one', async () => {
       start: async () => assert.fail('must not start work'),
     },
   });
-  assert.match(out.reply, /GitHub repository URL/);
+  assert.match(out.reply, /start a new template/);
 });
