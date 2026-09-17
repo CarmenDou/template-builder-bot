@@ -130,19 +130,32 @@ export async function startJob(config, { url, pr, extra }, deps = {}) {
   const dir = `${JOBS_ROOT}/${jobId}`;
   const task = pr ? buildFollowupTask({ pr, extra }) : buildTask({ url, extra });
 
-  // base64 keeps quotes, newlines and backticks in the task out of the shell entirely
+  // Both the task and the runner travel as base64 and land as files. Quoting a
+  // runner inline does not survive: `sh -c '... --allowedTools 'Read' ...'` ends
+  // the outer quote at the first inner one, which leaves `Bash(insta *)` bare in
+  // the shell (`Syntax error: "(" unexpected`) and eats the `*` as a glob.
   const taskB64 = Buffer.from(task, 'utf8').toString('base64');
+
+  // Safe to single-quote here: this string becomes a file, it is never re-parsed
+  // as part of a larger command line.
   const tools = ALLOWED_TOOLS.map((t) => `'${t}'`).join(' ');
+  const runner = [
+    'export PATH="/data/home/.insta/bin:/data/home/bin:$PATH"',
+    `cd ${dir}`,
+    // No `set -e`: a failing claude must still reach the next line, because
+    // exit.code is what the poller waits for.
+    `claude -p "$(cat ${dir}/task.txt)" --allowedTools ${tools} > ${dir}/out.log 2>&1`,
+    `echo $? > ${dir}/exit.code`,
+    '',
+  ].join('\n');
+  const runnerB64 = Buffer.from(runner, 'utf8').toString('base64');
 
   const script = [
     'set -e',
-    'export PATH="/data/home/.insta/bin:/data/home/bin:$PATH"',
     `mkdir -p ${dir}`,
     `printf '%s' '${taskB64}' | base64 -d > ${dir}/task.txt`,
-    `cd ${dir}`,
-    // The subshell writes exit.code only after claude returns, which is the
-    // signal the poller waits for.
-    `nohup sh -c 'claude -p "$(cat ${dir}/task.txt)" --allowedTools ${tools} > ${dir}/out.log 2>&1; echo $? > ${dir}/exit.code' > /dev/null 2>&1 < /dev/null &`,
+    `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
+    `nohup sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null &`,
     'echo started',
   ].join('\n');
 

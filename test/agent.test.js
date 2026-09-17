@@ -60,6 +60,14 @@ test('parseResult uses the LAST result block, not a quoted earlier one', () => {
   assert.equal(parseResult(log).verdict, 'directly-usable');
 });
 
+// Decodes the run.sh the outer script writes, so assertions can be made about
+// what will actually execute rather than about the transport.
+function runnerOf(script) {
+  const m = script.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \S+run\.sh/);
+  assert.ok(m, 'the script must ship a base64 run.sh');
+  return Buffer.from(m[1], 'base64').toString('utf8');
+}
+
 test('startJob launches with nohup and writes an exit code afterwards', async () => {
   let script = null;
   const run = async (_cfg, s) => {
@@ -70,10 +78,32 @@ test('startJob launches with nohup and writes an exit code afterwards', async ()
 
   assert.equal(jobId, 'J1');
   assert.equal(dir, '/data/work/jobs/J1');
-  assert.match(script, /nohup/, 'must survive the exec channel closing');
-  assert.match(script, /exit\.code/, 'completion signal must be written');
-  assert.match(script, /--allowedTools/, 'must not run with permissions bypassed');
+  assert.match(script, /nohup sh \S+run\.sh/, 'must survive the exec channel closing');
+
+  const runner = runnerOf(script);
+  assert.match(runner, /exit\.code/, 'completion signal must be written');
+  assert.match(runner, /--allowedTools/, 'must not run with permissions bypassed');
+  assert.ok(!runner.includes('set -e'), 'set -e would skip writing exit.code on failure');
   assert.ok(!script.includes('dangerously'), 'never bypasses permission checks');
+});
+
+test('the tool patterns never appear unencoded in the command line', async () => {
+  // Regression: the runner used to be inlined as `sh -c '... 'Read' 'Bash(insta *)' ...'`,
+  // whose inner quotes closed the outer one. That left the parenthesis bare
+  // (`sh: Syntax error: "(" unexpected`) and the shell ate the `*` as a glob.
+  let script = null;
+  const run = async (_cfg, s) => {
+    script = s;
+    return { stdout: 'started' };
+  };
+  await startJob(config, { url: 'https://github.com/a/b' }, { run, jobId: 'J3' });
+
+  assert.ok(!script.includes('Bash('), 'tool patterns must travel encoded, not on the command line');
+  assert.ok(!script.includes("sh -c"), 'no inline sh -c to quote-escape wrongly');
+
+  const runner = runnerOf(script);
+  assert.match(runner, /'Bash\(insta \*\)'/, 'the glob must survive intact');
+  assert.match(runner, /'Bash\(gh \*\)'/);
 });
 
 test('the task text reaches the box base64-encoded, never inline in the shell', async () => {
