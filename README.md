@@ -39,6 +39,18 @@ only declare one port, which ttyd already owns on the agent side.
 A job that outlives `JOB_TIMEOUT_MS` is reported as *still running*, not as failed, and is **not**
 killed.
 
+## Why the agent reports its own progress
+
+The same poll reads `stage.txt`, which the agent appends one line to at four moments: triage
+verdict, PR opened, build result, verification. Each new line is posted to the thread once.
+
+The agent reports these rather than the bot inferring them from GitHub, because only the agent knows
+which step it is actually in: a PR can exist while the agent is still deploying, and a green build
+says nothing about whether the app was ever exercised. Inferring would produce confident updates
+that are wrong.
+
+A failed post never ends the watch. The final report matters more than any one progress line.
+
 ## Safety boundaries
 
 - **Channel allowlist.** `ALLOWED_CHANNELS` is the only thing between Slack and an agent that can
