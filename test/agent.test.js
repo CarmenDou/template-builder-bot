@@ -35,20 +35,32 @@ verdict: thin-shell
 project: abc-123
 service: https://x.example.com
 pr: https://github.com/InsForge/instacloud-oss/pull/7
-asks: decide whether base or tiny is the right default`;
+ask: decide whether base or tiny is the right default
+ask: crm is a new meta.category
+ask: alwaysOn bills continuously`;
   const r = parseResult(log);
   assert.equal(r.verdict, 'thin-shell');
   assert.equal(r.project, 'abc-123');
   assert.equal(r.pr, 'https://github.com/InsForge/instacloud-oss/pull/7');
-  assert.match(r.asks, /base or tiny/);
+  assert.deepEqual(r.asks, [
+    'decide whether base or tiny is the right default',
+    'crm is a new meta.category',
+    'alwaysOn bills continuously',
+  ]);
+});
+
+test('an agent still writing the old one-line "asks:" is not dropped on the floor', () => {
+  // Jobs launched before the contract changed are still in flight.
+  const r = parseResult('RESULT\nverdict: out\nasks: (1) one thing; (2) another');
+  assert.deepEqual(r.asks, ['(1) one thing; (2) another']);
 });
 
 test('parseResult treats "none" as absent, so the bot does not print empty links', () => {
-  const r = parseResult('RESULT\nverdict: out\nproject: none\nservice: none\npr: none\nasks: none');
+  const r = parseResult('RESULT\nverdict: out\nproject: none\nservice: none\npr: none\nask: none');
   assert.equal(r.verdict, 'out');
   assert.equal(r.project, null);
   assert.equal(r.pr, null);
-  assert.equal(r.asks, null);
+  assert.deepEqual(r.asks, []);
 });
 
 test('parseResult returns null when the agent never printed one', () => {

@@ -19,15 +19,30 @@ export function describeStart({ url, jobId, followup = false }) {
   return `On it: \`${url}\`\nJob \`${jobId}\`. Triage first, then a draft PR, then a real deploy to verify. This usually takes 10 to 30 minutes and I will report back here.`;
 }
 
+/** `https://github.com/twentyhq/twenty` reads as `twentyhq/twenty` in a headline. */
+function repoName(url) {
+  return url.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '') || url;
+}
+
 export function describeResult({ url, jobId, exitCode, result, log }) {
   if (result) {
-    const lines = [`Done with \`${url}\` (job \`${jobId}\`).`];
-    if (result.verdict) lines.push(`Verdict: *${result.verdict}*`);
+    const headline = result.verdict
+      ? `Done with \`${repoName(url)}\` — *${result.verdict}*`
+      : `Done with \`${repoName(url)}\`.`;
+    const lines = [headline, ''];
+
+    // The deployment first: the first thing a reviewer does is open it and click
+    // around. The PR is what they read afterwards, once it looks real.
+    if (result.service) lines.push(`Open: ${result.service}`);
     if (result.pr) lines.push(`Draft PR: ${result.pr}`);
-    if (result.service) lines.push(`Deployed for you to check: ${result.service}`);
-    if (result.project) lines.push(`Project: \`${result.project}\` (kept, not deleted)`);
-    if (result.asks) lines.push(`\nNeeds you to settle: ${result.asks}`);
-    lines.push('\nNothing was published. Verifying and merging is yours.');
+    if (result.project) lines.push(`Project: ${result.project} (kept, not deleted)`);
+
+    const asks = result.asks ?? [];
+    if (asks.length) {
+      lines.push('', `*Needs you to settle*`, ...asks.map((a) => `• ${a}`));
+    }
+
+    lines.push('', `Nothing was published. Verifying and merging is yours. (job \`${jobId}\`)`);
     return lines.join('\n');
   }
 

@@ -83,7 +83,11 @@ Finish your reply with a section headed RESULT containing, one per line:
   project: <project id, or none>
   service: <public URL, or none>
   pr: <PR url, or none>
-  asks: <what you need a human to settle, or none>${hint}${stages}`;
+  ask: <one thing a human has to settle>
+
+Repeat the ask line once per thing, or leave it out entirely if there is nothing. One sentence each,
+naming the decision rather than arguing it: the reasoning belongs in the PR body, and a reader who
+needs it will open the PR. Five of them run together in one paragraph is a wall nobody reads.${hint}${stages}`;
 }
 
 export function buildFollowupTask({ pr, extra, dir }) {
@@ -106,7 +110,10 @@ Finish your reply with a section headed RESULT containing, one per line:
   project: <project id you verified in, or none>
   service: <public URL, or none>
   pr: https://github.com/InsForge/instacloud-oss/pull/${pr}
-  asks: <anything still needing a human, or none>${stages}`;
+  ask: <one thing a human has to settle>
+
+Repeat the ask line once per thing, or leave it out entirely if there is nothing. One sentence each,
+naming the decision rather than arguing it: the reasoning belongs in the PR body.${stages}`;
 }
 
 // argv, never a shell string, so a repo name can never become a command.
@@ -230,12 +237,21 @@ export function parseResult(log) {
     const value = m?.[1]?.trim();
     return value && value.toLowerCase() !== 'none' ? value : null;
   };
+  // One `ask:` line per thing to settle. Five of them on one line is a wall
+  // nobody reads, so the block carries them separately all the way to Slack.
+  const asks = [...block.matchAll(/^\s*ask:\s*(.+)$/gim)]
+    .map((m) => m[1].trim())
+    .filter((a) => a && a.toLowerCase() !== 'none');
+
+  const legacy = field('asks');
+  if (!asks.length && legacy) asks.push(legacy);
+
   return {
     verdict: field('verdict'),
     project: field('project'),
     service: field('service'),
     pr: field('pr'),
-    asks: field('asks'),
+    asks,
   };
 }
 
