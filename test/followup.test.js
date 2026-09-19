@@ -72,6 +72,6 @@ test('handler routes a PR mention into a follow-up job', async () => {
   });
   assert.equal(got.pr, 145);
   assert.equal(got.url, undefined, 'a follow-up carries no repo url');
-  assert.match(out.reply, /Picking PR #145 back up/);
+  assert.match(out.reply, /Picking `PR #145` back up/);
   assert.match(out.reply, /stays a draft/);
 });

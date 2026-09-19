@@ -83,7 +83,7 @@ test('a bare reply in a thread becomes a follow-up on that thread PR', async () 
   assert.equal(started.pr, 147);
   assert.match(started.extra, /use the small model/);
   assert.match(started.extra, /The thread this came from/, 'the agent gets the context, not just the last line');
-  assert.match(out.reply, /Picking PR #147 back up/);
+  assert.match(out.reply, /Picking `PR #147` back up/);
 });
 
 test('a thread with no PR still just explains itself', async () => {
@@ -198,7 +198,7 @@ test('when the PR link never reached the thread, the job id still finds it', asy
     },
   });
   assert.equal(started.pr, 147, 'recovered the PR through the job, not the thread');
-  assert.match(out.reply, /Picking PR #147 back up/);
+  assert.match(out.reply, /Picking `PR #147` back up/);
 });
 
 test('an unreadable job degrades to the help text rather than guessing', async () => {

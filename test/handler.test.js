@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleMention, followJob, describeResult, describeTimeout } from '../src/handler.js';
+import { handleMention, followJob, describeResult, describeTimeout, formatStage } from '../src/handler.js';
 
 const config = {
   allowedChannels: ['C_OK'],
@@ -71,9 +71,22 @@ test('posts each new stage line exactly once as it appears', async () => {
     deps: { read: async () => snapshots[i++], sleep: async () => {} },
   });
   assert.deepEqual(said, [
-    '• triage: thin-shell — no HTTP face',
-    '• pr: https://x/1 — waiting on CI',
+    '• *triage* thin-shell — no HTTP face',
+    '• *pr* https://x/1 — waiting on CI',
   ], 'each stage posted once, the repeated snapshot posted nothing');
+});
+
+test('the stage name carries the bold, and an odd line still gets posted', () => {
+  // Four landmarks you can skim down the thread beat four paragraphs. But a line
+  // the agent wrote in some other shape must still reach the human unchanged.
+  assert.equal(formatStage('build: green — amd64 and arm64'), '• *build* green — amd64 and arm64');
+  assert.equal(formatStage('note: the port probe needed a slower entrypoint'), '• *note* the port probe needed a slower entrypoint');
+  assert.equal(formatStage('no colon here at all'), '• no colon here at all');
+  assert.equal(
+    formatStage('verify: signed up, created a record, restarted: still there'),
+    '• *verify* signed up, created a record, restarted: still there',
+    'only the first colon is the stage name',
+  );
 });
 
 test('a failure to post a stage does not end the watch', async () => {

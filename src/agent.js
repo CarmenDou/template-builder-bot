@@ -56,16 +56,24 @@ export function newJobId(now = Date.now(), rand = () => crypto.randomBytes(3).to
 export function stageInstructions(dir) {
   return `## Reporting progress
 
-Append ONE line to \`${dir}/stage.txt\` at each of these four moments, and only these four. Someone
-is watching from Slack and this file is the only way they know you are alive.
+Append ONE line to \`${dir}/stage.txt\` at each of these four moments. Someone is watching from
+Slack and this file is the only way they know you are alive.
 
     triage: <verdict> — one line of why
     pr: <url> — what you are waiting on next
     build: <green|red> — what happens next
     verify: <what you actually proved, not what you ran>
 
-Append, never rewrite, and keep each to one line. Write the triage line before you start writing
-files, not after.`;
+Append, never rewrite. Write the triage line before you start writing files, not after.
+
+**One sentence each.** These are landmarks in a thread, not a narrative: the reader wants to know
+where you are, and the detail is going into the PR body anyway. When something unexpected happens
+and changes what you do next, give it its own line rather than stuffing it into the nearest stage:
+
+    note: the first deploy failed the port probe, so the entrypoint now holds it through migrations
+
+Then \`build: green\` stays \`build: green\`. Use \`note:\` only for something that changed your plan,
+never for narrating ordinary progress.`;
 }
 
 export function buildTask({ url, extra, dir }) {

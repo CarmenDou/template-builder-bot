@@ -12,16 +12,17 @@ const HELP = [
   'Inside a thread I already replied in, you can leave the number out: I read the thread for it.',
 ].join('\n');
 
-export function describeStart({ url, jobId, followup = false }) {
-  if (followup) {
-    return `Picking ${url} back up.\nJob \`${jobId}\`. I will push to the same branch, let CI rebuild, redeploy and re-verify, then update the PR body. It stays a draft.`;
-  }
-  return `On it: \`${url}\`\nJob \`${jobId}\`. Triage first, then a draft PR, then a real deploy to verify. This usually takes 10 to 30 minutes and I will report back here.`;
-}
-
 /** `https://github.com/twentyhq/twenty` reads as `twentyhq/twenty` in a headline. */
 function repoName(url) {
   return url.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '') || url;
+}
+
+export function describeStart({ url, jobId, followup = false }) {
+  // A follow-up is always handed the `PR #147` label, never a repository URL.
+  if (followup) {
+    return `Picking \`${url}\` back up.\nI push to the same branch, let CI rebuild, redeploy and re-verify, then update the PR body. It stays a draft. (job \`${jobId}\`)`;
+  }
+  return `On it: \`${repoName(url)}\`\nTriage first, then a draft PR, then a real deploy to verify. Usually 10 to 30 minutes, and I report back here. (job \`${jobId}\`)`;
 }
 
 export function describeResult({ url, jobId, exitCode, result, log }) {
@@ -188,9 +189,14 @@ export async function handleMention({ event, config, deps = {} }) {
   return { reply: describeStart({ url, jobId }), job: { jobId, url } };
 }
 
-/** One line the agent appended to stage.txt, rendered for the thread. */
+/**
+ * One line the agent appended to stage.txt, rendered for the thread. The stage
+ * name carries the bold so four of these scroll past as four landmarks rather
+ * than four paragraphs.
+ */
 export function formatStage(line) {
-  return `• ${line}`;
+  const m = String(line).match(/^\s*([a-z]+):\s*(.+)$/is);
+  return m ? `• *${m[1]}* ${m[2].trim()}` : `• ${line}`;
 }
 
 /**
