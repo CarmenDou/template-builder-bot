@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleMention, followJob, describeResult, describeTimeout } from '../src/handler.js';
+import { handleMention, followJob, describeResult, describeTimeout, formatStage } from '../src/handler.js';
 
 const config = {
   allowedChannels: ['C_OK'],
@@ -71,9 +71,22 @@ test('posts each new stage line exactly once as it appears', async () => {
     deps: { read: async () => snapshots[i++], sleep: async () => {} },
   });
   assert.deepEqual(said, [
-    '• triage: thin-shell — no HTTP face',
-    '• pr: https://x/1 — waiting on CI',
+    '• *triage* thin-shell — no HTTP face',
+    '• *pr* https://x/1 — waiting on CI',
   ], 'each stage posted once, the repeated snapshot posted nothing');
+});
+
+test('the stage name carries the bold, and an odd line still gets posted', () => {
+  // Four landmarks you can skim down the thread beat four paragraphs. But a line
+  // the agent wrote in some other shape must still reach the human unchanged.
+  assert.equal(formatStage('build: green — amd64 and arm64'), '• *build* green — amd64 and arm64');
+  assert.equal(formatStage('note: the port probe needed a slower entrypoint'), '• *note* the port probe needed a slower entrypoint');
+  assert.equal(formatStage('no colon here at all'), '• no colon here at all');
+  assert.equal(
+    formatStage('verify: signed up, created a record, restarted: still there'),
+    '• *verify* signed up, created a record, restarted: still there',
+    'only the first colon is the stage name',
+  );
 });
 
 test('a failure to post a stage does not end the watch', async () => {
@@ -190,4 +203,40 @@ test('followJob distinguishes finishing from running out of patience', async () 
   });
   assert.equal(timedOut.finished, false, 'a timeout is not a result');
   assert.match(timedOut.text, /NOT been killed/);
+});
+
+test('each thing to settle gets its own line, never one run-on paragraph', () => {
+  // Five asks in one paragraph is a wall nobody reads. A reader has to be able
+  // to count them down the left edge.
+  const text = describeResult({
+    url: 'https://github.com/twentyhq/twenty',
+    jobId: 'J1',
+    exitCode: 0,
+    result: {
+      verdict: 'thin-shell',
+      project: 'p1 (tpl-twenty)',
+      service: 'https://svc.example.com',
+      pr: 'https://example.com/pr/149',
+      asks: ['crm is a new meta.category', 'sign-up is open to anyone', 'alwaysOn bills continuously'],
+    },
+  });
+
+  const bullets = text.split('\n').filter((l) => l.startsWith('• '));
+  assert.equal(bullets.length, 3, 'one line per thing to settle');
+  assert.match(text, /\*Needs you to settle\*/);
+  assert.ok(!/•.*•/.test(text), 'never two on one line');
+});
+
+test('the headline is the repo name and the verdict, not a bare URL', () => {
+  const text = describeResult({
+    url: 'https://github.com/twentyhq/twenty',
+    jobId: 'J1',
+    exitCode: 0,
+    result: { verdict: 'thin-shell', project: null, service: null, pr: null, asks: [] },
+  });
+  const headline = text.split('\n')[0];
+  assert.match(headline, /twentyhq\/twenty.*thin-shell/);
+  assert.ok(!headline.includes('https://'), 'the URL is noise in a headline');
+  assert.ok(!/Needs you to settle/.test(text), 'no empty section when there is nothing to settle');
+  assert.match(text, /job `J1`/, 'the job id stays reachable, just out of the way');
 });

@@ -12,22 +12,38 @@ const HELP = [
   'Inside a thread I already replied in, you can leave the number out: I read the thread for it.',
 ].join('\n');
 
+/** `https://github.com/twentyhq/twenty` reads as `twentyhq/twenty` in a headline. */
+function repoName(url) {
+  return url.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '') || url;
+}
+
 export function describeStart({ url, jobId, followup = false }) {
+  // A follow-up is always handed the `PR #147` label, never a repository URL.
   if (followup) {
-    return `Picking ${url} back up.\nJob \`${jobId}\`. I will push to the same branch, let CI rebuild, redeploy and re-verify, then update the PR body. It stays a draft.`;
+    return `Picking \`${url}\` back up.\nI push to the same branch, let CI rebuild, redeploy and re-verify, then update the PR body. It stays a draft. (job \`${jobId}\`)`;
   }
-  return `On it: \`${url}\`\nJob \`${jobId}\`. Triage first, then a draft PR, then a real deploy to verify. This usually takes 10 to 30 minutes and I will report back here.`;
+  return `On it: \`${repoName(url)}\`\nTriage first, then a draft PR, then a real deploy to verify. Usually 10 to 30 minutes, and I report back here. (job \`${jobId}\`)`;
 }
 
 export function describeResult({ url, jobId, exitCode, result, log }) {
   if (result) {
-    const lines = [`Done with \`${url}\` (job \`${jobId}\`).`];
-    if (result.verdict) lines.push(`Verdict: *${result.verdict}*`);
+    const headline = result.verdict
+      ? `Done with \`${repoName(url)}\` — *${result.verdict}*`
+      : `Done with \`${repoName(url)}\`.`;
+    const lines = [headline, ''];
+
+    // The deployment first: the first thing a reviewer does is open it and click
+    // around. The PR is what they read afterwards, once it looks real.
+    if (result.service) lines.push(`Open: ${result.service}`);
     if (result.pr) lines.push(`Draft PR: ${result.pr}`);
-    if (result.service) lines.push(`Deployed for you to check: ${result.service}`);
-    if (result.project) lines.push(`Project: \`${result.project}\` (kept, not deleted)`);
-    if (result.asks) lines.push(`\nNeeds you to settle: ${result.asks}`);
-    lines.push('\nNothing was published. Verifying and merging is yours.');
+    if (result.project) lines.push(`Project: ${result.project} (kept, not deleted)`);
+
+    const asks = result.asks ?? [];
+    if (asks.length) {
+      lines.push('', `*Needs you to settle*`, ...asks.map((a) => `• ${a}`));
+    }
+
+    lines.push('', `Nothing was published. Verifying and merging is yours. (job \`${jobId}\`)`);
     return lines.join('\n');
   }
 
@@ -173,9 +189,14 @@ export async function handleMention({ event, config, deps = {} }) {
   return { reply: describeStart({ url, jobId }), job: { jobId, url } };
 }
 
-/** One line the agent appended to stage.txt, rendered for the thread. */
+/**
+ * One line the agent appended to stage.txt, rendered for the thread. The stage
+ * name carries the bold so four of these scroll past as four landmarks rather
+ * than four paragraphs.
+ */
 export function formatStage(line) {
-  return `• ${line}`;
+  const m = String(line).match(/^\s*([a-z]+):\s*(.+)$/is);
+  return m ? `• *${m[1]}* ${m[2].trim()}` : `• ${line}`;
 }
 
 /**
