@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newJobId, buildTask, parseResult, startJob, readJob } from '../src/agent.js';
+import { newJobId, buildTask, parseResult, startJob, readJob, stageInstructions } from '../src/agent.js';
 
 const config = {
   instaBin: 'insta',
@@ -101,6 +101,53 @@ test('startJob launches with nohup and writes an exit code afterwards', async ()
   assert.ok(!runner.includes('set -e'), 'set -e would skip writing exit.code on failure');
   assert.ok(!script.includes('dangerously'), 'never bypasses permission checks');
 });
+
+test('the agent gets a headless browser, configured per job and nowhere else', async () => {
+  let script = null;
+  const run = async (_cfg, s) => {
+    script = s;
+    return { stdout: 'started' };
+  };
+  await startJob(config, { url: 'https://github.com/a/b' }, { run, jobId: 'J7' });
+
+  const runner = runnerOf(script);
+  assert.match(runner, /'mcp__playwright'/, 'the browser tools are allowed');
+  assert.match(runner, /--mcp-config \S+J7\/mcp\.json --strict-mcp-config/, 'this job config only, nothing inherited from the box');
+
+  const mcp = JSON.parse(fileOf(script, 'mcp.json'));
+  const args = mcp.mcpServers.playwright.args;
+  assert.ok(args.includes('--headless'), 'no display on the box');
+  assert.ok(args.includes('--isolated'), "one template must never see another's cookies");
+  assert.equal(args[args.indexOf('--output-dir') + 1], '/data/work/jobs/J7/browser', 'screenshots beside the job, not inside a clone');
+  assert.match(args.find((a) => a.startsWith('@playwright/mcp@')), /@\d/, 'pinned, not @latest');
+});
+
+test('the runner reinstalls browser libraries after a restart wiped the root disk', async () => {
+  let script = null;
+  const run = async (_cfg, s) => {
+    script = s;
+    return { stdout: 'started' };
+  };
+  await startJob(config, { url: 'https://github.com/a/b' }, { run, jobId: 'J8' });
+
+  const runner = runnerOf(script);
+  assert.match(runner, /dpkg -s libnss3/, 'cheap check first');
+  assert.match(runner, /playwright@\S+ install --with-deps chromium/, 'the full install only when something is missing');
+  assert.ok(runner.indexOf('dpkg -s') < runner.indexOf('claude -p'), 'the check runs before claude starts');
+});
+
+test('the verify stage is four verdicts, not prose', () => {
+  const text = stageInstructions('/data/work/jobs/J1');
+  assert.match(text, /verify: reach ✓\s+enter ✓\s+round-trip ✓\s+survive ✓/);
+  assert.match(text, /never free text/);
+});
+
+// Any file the outer script ships as base64, decoded.
+function fileOf(script, name) {
+  const m = script.match(new RegExp(`printf '%s' '([A-Za-z0-9+/=]+)' \\| base64 -d > \\S+${name.replace('.', '\\.')}`));
+  assert.ok(m, `the script must ship a base64 ${name}`);
+  return Buffer.from(m[1], 'base64').toString('utf8');
+}
 
 test('the tool patterns never appear unencoded in the command line', async () => {
   // Regression: the runner used to be inlined as `sh -c '... 'Read' 'Bash(insta *)' ...'`,

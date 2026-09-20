@@ -44,7 +44,12 @@ const ALLOWED_TOOLS = [
   'Bash(test *)',
   'Bash(diff *)',
   'Bash(node *)',
+  'mcp__playwright',
 ];
+
+// Pinned as a pair: the browser must come from the playwright the MCP bundles.
+const PLAYWRIGHT_MCP = '@playwright/mcp@0.0.82';
+const PLAYWRIGHT = 'playwright@1.64.0-alpha-1789764292000';
 
 export function newJobId(now = Date.now(), rand = () => crypto.randomBytes(3).toString('hex')) {
   const stamp = new Date(now).toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -62,9 +67,13 @@ Slack and this file is the only way they know you are alive.
     triage: <verdict> — one line of why
     pr: <url> — what you are waiting on next
     build: <green|red> — what happens next
-    verify: <what you actually proved, not what you ran>
+    verify: reach ✓  enter ✓  round-trip ✓  survive ✓
 
 Append, never rewrite. Write the triage line before you start writing files, not after.
+
+The verify line is the four verdicts from CLAUDE.md, in that order, never free text: the reader
+counts ticks. A failure carries its reason inline, \`round-trip ✗ search returned nothing\`. An
+item that cannot apply is \`—\` plus a word, \`survive — stateless\`.
 
 **One sentence each.** These are landmarks in a thread, not a narrative: the reader wants to know
 where you are, and the detail is going into the PR body anyway. When something unexpected happens
@@ -83,8 +92,8 @@ export function buildTask({ url, extra, dir }) {
 
 Follow your CLAUDE.md end to end: triage it against the five judgements, create a fresh project for
 this job, write the manifest, open a DRAFT PR on InsForge/instacloud-oss, deploy and verify it
-(including one real request that exercises what the app actually does, not just the health gate),
-put the evidence and the verification entry points in the PR body, then stop. Do not publish.
+(the four verdicts under Verifying: reach, enter, round-trip, survive, in the browser when the app
+has one), put the evidence and the entry points in the PR body, then stop. Do not publish.
 
 Finish your reply with a section headed RESULT containing, one per line:
   verdict: <directly-usable | thin-shell | tool-not-service | out>
@@ -173,14 +182,32 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
   // Safe to single-quote here: this string becomes a file, it is never re-parsed
   // as part of a larger command line.
   const tools = ALLOWED_TOOLS.map((t) => `'${t}'`).join(' ');
+
+  // Headless, a fresh profile per job, root needs no-sandbox, screenshots beside
+  // the job and never inside the instacloud-oss clone where a commit could take them.
+  const mcp = JSON.stringify({
+    mcpServers: {
+      playwright: {
+        command: 'npx',
+        args: ['-y', PLAYWRIGHT_MCP, '--headless', '--isolated', '--no-sandbox', '--output-dir', `${dir}/browser`],
+      },
+    },
+  });
+  const mcpB64 = Buffer.from(mcp, 'utf8').toString('base64');
+
   const runner = [
     'export PATH="/data/home/.insta/bin:/data/home/bin:$PATH"',
     // Own pid, recorded before any work, so the job can be stopped later.
     `echo $$ > ${dir}/pid`,
     `cd ${dir}`,
+    // Chromium sits on the volume but its shared libraries sit on the root disk,
+    // which a restart wipes. Cheap check; the install runs once after a restart.
+    `if ! dpkg -s libnss3 >/dev/null 2>&1 || ! ls /data/home/.cache/ms-playwright 2>/dev/null | grep -q chromium; then`,
+    `  npx -y ${PLAYWRIGHT} install --with-deps chromium > ${dir}/setup.log 2>&1`,
+    'fi',
     // No `set -e`: a failing claude must still reach the next line, because
     // exit.code is what the poller waits for.
-    `claude -p "$(cat ${dir}/task.txt)" --allowedTools ${tools} > ${dir}/out.log 2>&1`,
+    `claude -p "$(cat ${dir}/task.txt)" --allowedTools ${tools} --mcp-config ${dir}/mcp.json --strict-mcp-config > ${dir}/out.log 2>&1`,
     `echo $? > ${dir}/exit.code`,
     '',
   ].join('\n');
@@ -199,6 +226,7 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
     `mkdir -p ${dir}`,
     `printf '%s' '${taskB64}' | base64 -d > ${dir}/task.txt`,
     `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
+    `printf '%s' '${mcpB64}' | base64 -d > ${dir}/mcp.json`,
     `printf '%s' '${ticket}' | base64 -d > ${dir}/slack.json`,
     `nohup setsid sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null &`,
     'echo started',
