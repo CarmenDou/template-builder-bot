@@ -189,7 +189,8 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
     mcpServers: {
       playwright: {
         command: 'npx',
-        args: ['-y', PLAYWRIGHT_MCP, '--headless', '--isolated', '--no-sandbox', '--output-dir', `${dir}/browser`],
+        // --browser chromium: the default channel is system Chrome, which the box does not have.
+        args: ['-y', PLAYWRIGHT_MCP, '--browser', 'chromium', '--headless', '--isolated', '--no-sandbox', '--output-dir', `${dir}/browser`],
       },
     },
   });

@@ -116,6 +116,7 @@ test('the agent gets a headless browser, configured per job and nowhere else', a
 
   const mcp = JSON.parse(fileOf(script, 'mcp.json'));
   const args = mcp.mcpServers.playwright.args;
+  assert.equal(args[args.indexOf('--browser') + 1], 'chromium', 'the default channel is system Chrome, which is not installed');
   assert.ok(args.includes('--headless'), 'no display on the box');
   assert.ok(args.includes('--isolated'), "one template must never see another's cookies");
   assert.equal(args[args.indexOf('--output-dir') + 1], '/data/work/jobs/J7/browser', 'screenshots beside the job, not inside a clone');
