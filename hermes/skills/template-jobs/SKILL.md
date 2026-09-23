@@ -29,13 +29,14 @@ it takes, 10 to 30 minutes, and then start following it straight away, in the sa
 
 ## Following, until it is done
 
-Loop on this, one call per look:
+Loop on exactly this, one call per look, with nothing added, wrapped or quoted:
 
-    /data/.hermes/bin/cc "sleep 50; /data/home/bin/job-feed <jobId> <offset> <stages>"
+    /data/.hermes/bin/follow <jobId> <offset> <stages>
 
 Start with offset `0` and stages `0`. Every run ends with a line like
-`next: 1880737 8 status: running`; pass those two numbers back on the next call. Never poll faster
-than this: it costs a turn each time.
+`next: 1880737 8 status: running`; pass those two numbers back on the next call. It waits on the
+agent box by itself, up to about 45 seconds, and answers early the moment a milestone lands or the
+job ends. Never put `sleep` in front of it or around it.
 
 What comes back since your last look:
 
@@ -65,7 +66,10 @@ Their message reaches you in the middle of the loop. Answer it, then carry on fo
   the job and do not stop following it.
 - A change of direction: pass it on with `steer_job`, in their words rather than your summary, say
   in a sentence that you have, and carry on following. The agent keeps everything it has done.
-- "Stop": `stop_job`, say what was already pushed stays pushed, and stop following.
+- "Stop": call `stop_job`, say what was already pushed stays pushed, and stop following.
+
+**Ending your turn does not stop the job.** It runs on another machine and carries on whether
+anyone is watching or not, so a "stop" answered only with words leaves it running unobserved.
 
 ## After a person has looked at the draft
 

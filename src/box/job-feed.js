@@ -1,16 +1,35 @@
 #!/usr/bin/env node
-// What a job has done since the caller last looked: job-feed <jobId> [byteOffset] [stagesSeen]
+// What a job has done since the caller last looked:
+//   job-feed <jobId> [byteOffset] [stagesSeen] [waitSeconds]
 //
 // Prints the new agent sentences, tool calls and stage lines, then one `next:` line carrying the
 // offsets to pass back next time. Only the increment, and capped, so whoever is watching reads a
 // few hundred bytes a minute instead of the whole log again.
+//
+// With waitSeconds it waits before answering, and answers early the moment a milestone lands or
+// the job ends. The wait lives here, not in the caller's command, so there is one command to call
+// and nothing to quote: a caller that builds `sleep N; ...` itself ends up waiting twice, or
+// running half the line on the wrong machine.
 const fs = require('fs');
-const [jobId, offArg = '0', stagesArg = '0'] = process.argv.slice(2);
-if (!/^[\w-]+$/.test(jobId || '')) { console.error('usage: job-feed <jobId> [offset] [stagesSeen]'); process.exit(2); }
+const [jobId, offArg = '0', stagesArg = '0', waitArg = '0'] = process.argv.slice(2);
+if (!/^[\w-]+$/.test(jobId || '')) { console.error('usage: job-feed <jobId> [offset] [stagesSeen] [waitSeconds]'); process.exit(2); }
 const dir = `/data/work/jobs/${jobId}`;
 const offset = Number(offArg) || 0;
 const stagesSeen = Number(stagesArg) || 0;
+const wait = Math.min(Math.max(Number(waitArg) || 0, 0), 150);
 const MAX_EVENTS = 40;
+
+const countStages = () => {
+  try { return fs.readFileSync(`${dir}/stage.txt`, 'utf8').split('\n').filter((l) => l.trim()).length; } catch { return 0; }
+};
+const finished = () => fs.existsSync(`${dir}/exit.code`);
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+if (!fs.existsSync(dir)) { console.log(`no such job: ${jobId}`); process.exit(1); }
+for (let waited = 0; waited < wait * 1000; waited += 3000) {
+  if (finished() || countStages() > stagesSeen) break;
+  pause(3000);
+}
 
 const flat = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);

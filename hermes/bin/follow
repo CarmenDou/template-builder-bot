@@ -1,0 +1,8 @@
+#!/bin/sh
+# Follow a template job: follow <jobId> <offset> <stagesSeen>
+# One command with nothing to quote. It waits on the agent box and answers early when a milestone
+# lands or the job ends, so the caller never builds `sleep N; ...` itself: when it did, it waited
+# twice and ran half the line on this machine instead of that one.
+case "$1" in ''|*[!A-Za-z0-9_-]*) echo "usage: follow <jobId> <offset> <stagesSeen>"; exit 2 ;; esac
+case "${2:-0}${3:-0}" in *[!0-9]*) echo "offset and stagesSeen are numbers"; exit 2 ;; esac
+exec /data/.hermes/bin/cc /data/home/bin/job-feed "$1" "${2:-0}" "${3:-0}" 45

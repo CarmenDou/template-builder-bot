@@ -119,7 +119,7 @@ async function callTool(config, name, args, deps) {
   // The job never posts anywhere itself. Whoever started it follows it and does
   // the talking, so the conversation has one voice that can also hear the reply.
   const follow = (jobId) =>
-    ` It says nothing on its own. Follow it with: /data/.hermes/bin/cc "/data/home/bin/job-feed ${jobId} 0 0"`;
+    ` It says nothing on its own. Follow it with: /data/.hermes/bin/follow ${jobId} 0 0`;
 
   // The one guard that cannot be a rule the caller remembers: under pressure,
   // with three people talking at once, remembering is exactly what fails.

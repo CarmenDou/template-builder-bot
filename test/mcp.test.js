@@ -170,6 +170,7 @@ test('starting a job says how to follow it', async () => {
     deps,
   );
   const said = res.result.content[0].text;
-  assert.match(said, /job-feed J42 0 0/);
+  assert.match(said, /follow J42 0 0/);
+  assert.doesNotMatch(said, /"/, 'nothing for the caller to quote');
   assert.match(said, /says nothing on its own/);
 });
