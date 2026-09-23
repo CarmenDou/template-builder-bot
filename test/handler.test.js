@@ -240,3 +240,43 @@ test('the headline is the repo name and the verdict, not a bare URL', () => {
   assert.ok(!/Needs you to settle/.test(text), 'no empty section when there is nothing to settle');
   assert.match(text, /job `J1`/, 'the job id stays reachable, just out of the way');
 });
+
+test('what the agent created reaches Slack, labelled as not for the PR', () => {
+  // Template variable values are write-only, so a report that drops these leaves
+  // the reviewer unable to sign in and the platform unable to tell them either.
+  const text = describeResult({
+    url: 'https://github.com/twentyhq/twenty',
+    jobId: 'J1',
+    exitCode: 0,
+    result: {
+      verdict: 'thin-shell',
+      project: 'p1',
+      service: 'https://svc.example.com',
+      pr: 'https://example.com/pr/149',
+      created: [
+        'Signed up the first user as admin@example.com / 12345678 (Twenty rejects 6 characters)',
+        'Seeded one contact named "Acme Test" so search had something to find',
+      ],
+      asks: ['crm is a new meta.category'],
+    },
+  });
+
+  const bullets = text.split('\n').filter((l) => l.startsWith('• '));
+  assert.equal(bullets.length, 3, 'two created lines and one ask');
+  assert.match(text, /\*What it created\*/);
+  assert.match(text, /never the PR/, 'the reader must know this is not public');
+  assert.ok(
+    text.indexOf('What it created') < text.indexOf('Needs you to settle'),
+    'what you need to get in comes before what you have to decide',
+  );
+});
+
+test('nothing created means no empty section', () => {
+  const text = describeResult({
+    url: 'https://github.com/a/b',
+    jobId: 'J1',
+    exitCode: 0,
+    result: { verdict: 'out', project: null, service: null, pr: null, created: [], asks: [] },
+  });
+  assert.ok(!/What it created/.test(text));
+});

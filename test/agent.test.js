@@ -49,6 +49,27 @@ ask: alwaysOn bills continuously`;
   ]);
 });
 
+test('created lines are collected separately from asks', () => {
+  const log = `RESULT
+verdict: thin-shell
+created: signed up admin@example.com / 12345678
+created: seeded one contact named "Acme Test"
+ask: crm is a new meta.category`;
+  const r = parseResult(log);
+  assert.deepEqual(r.created, [
+    'signed up admin@example.com / 12345678',
+    'seeded one contact named "Acme Test"',
+  ]);
+  assert.deepEqual(r.asks, ['crm is a new meta.category']);
+});
+
+test('the task tells the agent to report what it made and to withhold what it was given', () => {
+  const task = buildTask({ url: 'https://github.com/a/b' });
+  assert.match(task, /created: /, 'the field exists in the contract');
+  assert.match(task, /BROUGHT INTO EXISTENCE/, 'only its own doing');
+  assert.match(task, /GitHub\s+token and the platform key/, 'never the credentials it was handed');
+});
+
 test('an agent still writing the old one-line "asks:" is not dropped on the floor', () => {
   // Jobs launched before the contract changed are still in flight.
   const r = parseResult('RESULT\nverdict: out\nasks: (1) one thing; (2) another');

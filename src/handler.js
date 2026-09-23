@@ -38,6 +38,14 @@ export function describeResult({ url, jobId, exitCode, result, log }) {
     if (result.pr) lines.push(`Draft PR: ${result.pr}`);
     if (result.project) lines.push(`Project: ${result.project} (kept, not deleted)`);
 
+    // The values that exist nowhere else. Template variables are write-only, so
+    // the platform cannot hand these back, and the PR must not carry them: this
+    // private channel is the only place a reviewer can pick them up.
+    const created = result.created ?? [];
+    if (created.length) {
+      lines.push('', '*What it created* (this channel only, never the PR)', ...created.map((c) => `• ${c}`));
+    }
+
     const asks = result.asks ?? [];
     if (asks.length) {
       lines.push('', `*Needs you to settle*`, ...asks.map((a) => `• ${a}`));
