@@ -274,9 +274,31 @@ export function boxCommand(config, script) {
   };
 }
 
-function execInBox(config, script, opts) {
+// ssh certificates are short-lived, about an hour. The config block the setup
+// writes renews them itself, through a `Match exec` line, but that line calls a
+// bare `insta` and a `~` path that only resolve on a machine set up by hand, and
+// renewing REWRITES the block, so patching either one does not survive. Renewing
+// from here does: it depends on nothing outside this process and the volume.
+async function renewCertificate(config) {
+  await execInsta(config, ['compute', 'ssh', config.agentService, '--ensure-cert', config.sshAlias], {
+    timeoutMs: 60000,
+  });
+}
+
+// An expired certificate looks like any other ssh failure, so rather than read
+// the expiry, spend one retry on it. The happy path pays nothing.
+export function execInBox(config, script, opts, deps = {}) {
+  const { run = spawn, renew = renewCertificate } = deps;
   const { file, args, env } = boxCommand(config, script);
-  return spawn(file, args, { ...opts, env });
+  if (file !== 'ssh') return run(file, args, { ...opts, env });
+
+  return run(file, args, { ...opts, env }).catch(async (error) => {
+    await renew(config).catch(() => {
+      // Report the ssh failure, not the renewal's: the caller asked for the box.
+      throw error;
+    });
+    return run(file, args, { ...opts, env });
+  });
 }
 
 export async function ensureLogin(config, run = execInsta) {
