@@ -200,13 +200,14 @@ export async function handleMention({ event, config, deps = {} }) {
 }
 
 /**
- * One line the agent appended to stage.txt, rendered for the thread. The stage
- * name carries the bold so four of these scroll past as four landmarks rather
- * than four paragraphs.
+ * One line the agent appended to stage.txt, as it goes into the thread.
+ *
+ * Deliberately unstyled. A milestone and a line about what the agent is doing
+ * are both just the job talking, and marking one of them up made the thread
+ * read as two different things reporting rather than one thing working.
  */
 export function formatStage(line) {
-  const m = String(line).match(/^\s*([a-z]+):\s*(.+)$/is);
-  return m ? `• *${m[1]}* ${m[2].trim()}` : `• ${line}`;
+  return String(line).trim();
 }
 
 /**

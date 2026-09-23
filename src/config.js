@@ -29,6 +29,10 @@ export function loadConfig(env = process.env, { needsSlack = true } = {}) {
     slackReviewBotIds: parseList(env.SLACK_REVIEW_BOT_IDS ?? ''),
     slackApproveBotIds: parseList(env.SLACK_CLAUDE_BOT_ID ?? ''),
 
+    // Used only to say, in a sentence, what a running job is doing. Absent, a
+    // job still reports its milestones and its result, just not the middle.
+    anthropicApiKey: env.ANTHROPIC_API_KEY,
+
     // How the bot reaches the agent box
     instaApiKey: env.INSTA_API_KEY,
     instaBin: env.INSTA_BIN ?? 'insta',
