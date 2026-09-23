@@ -123,28 +123,35 @@ const claudeFlags = (dir) =>
 export function stageInstructions(dir) {
   return `## Reporting progress
 
-Append ONE line to \`${dir}/stage.txt\` at each of these four moments. Someone is watching from
-Slack and this file is the only way they know you are alive.
+Append ONE line to \`${dir}/stage.txt\` each time you finish one of these, in this order. Someone is
+watching from Slack, and this file is the only thing they see. Append, never rewrite.
 
     triage: <verdict> — one line of why
+    manifest: <what you wrote> — the overlay too, if there is one
     pr: <url> — what you are waiting on next
     build: <green|red> — what happens next
+    deploy: <url> — or what failed and what you are trying
     verify: reach ✓  enter ✓  round-trip ✓  survive ✓
 
-Append, never rewrite. Write the triage line before you start writing files, not after.
+Write the triage line before you start writing files, not after.
 
 The verify line is the four verdicts from CLAUDE.md, in that order, never free text: the reader
 counts ticks. A failure carries its reason inline, \`round-trip ✗ search returned nothing\`. An
 item that cannot apply is \`—\` plus a word, \`survive — stateless\`.
 
-**One sentence each.** These are landmarks in a thread, not a narrative: the reader wants to know
-where you are, and the detail is going into the PR body anyway. When something unexpected happens
-and changes what you do next, give it its own line rather than stuffing it into the nearest stage:
+**If a step takes more than about five minutes, append a line before it is done**, saying what you
+are working on and what you are waiting for. Twenty minutes of silence in the middle of a deploy is
+the worst thing this file can do, and it is exactly when the person is most curious:
 
-    note: the first deploy failed the port probe, so the entrypoint now holds it through migrations
+    deploy: migration stalled after creating the postgres extensions, reading logs before I touch anything
+    deploy: redis reachable and the TLS handshake is fine, so it is the migration and not the queue
 
-Then \`build: green\` stays \`build: green\`. Use \`note:\` only for something that changed your plan,
-never for narrating ordinary progress.`;
+Use \`note:\` for something unexpected that changed your plan, and only for that:
+
+    note: a draft PR already existed (#149), so I am continuing that one rather than opening a second
+
+**One sentence each.** These are the only words anybody reads while you work: the detail goes in the
+PR body. Say what you did and what it means, never what you typed.`;
 }
 
 export function buildTask({ url, extra, dir }) {

@@ -16,127 +16,99 @@ const reader = (states) => {
   return async () => states[Math.min(i++, states.length - 1)];
 };
 
-const steps = (n, from = 0) => Array.from({ length: n }, (_, i) => `action ${from + i + 1}`);
-const done = (extra = {}) => ({ stages: [], steps: [], done: true, exitCode: 0, log: '', ...extra });
-
-test('what the agent did goes to the narrator, not into the thread', async () => {
-  const s = slack();
-  const seen = [];
-  await watchJob(config, job, {
-    read: reader([{ stages: [], steps: steps(8), done: false }, done({ steps: steps(8) })]),
-    ...s,
-    say: async (_c, { activity }) => (seen.push(activity), 'Reading how Twenty starts.'),
-    sleep: async () => {},
-  });
-  assert.deepEqual(seen[0], steps(8), 'the raw actions reach the narrator');
-  const texts = s.posted.map((m) => m.text);
-  assert.ok(texts.includes('Reading how Twenty starts.'), 'the sentence is posted');
-  assert.ok(!texts.some((t) => /action \d/.test(t)), 'and the raw actions are not');
-});
-
-test('a handful of new actions is not worth a sentence yet', async () => {
-  const s = slack();
-  let calls = 0;
-  await watchJob(config, job, {
-    read: reader([{ stages: [], steps: steps(2), done: false }, done({ steps: steps(2) })]),
-    ...s,
-    say: async () => (calls += 1, 'something'),
-    sleep: async () => {},
-  });
-  assert.equal(calls, 1, 'only the one at the end, when there is nothing left to wait for');
-});
-
-test('each sentence is told what the last one was, so it does not repeat', async () => {
-  const s = slack();
-  const previous = [];
-  await watchJob(config, job, {
-    read: reader([
-      { stages: [], steps: steps(8), done: false },
-      { stages: [], steps: steps(16), done: false },
-      done({ steps: steps(16) }),
-    ]),
-    ...s,
-    say: async (_c, p) => (previous.push(p.previous), `sentence ${previous.length}`),
-    sleep: async () => {},
-  });
-  assert.equal(previous[0], '');
-  assert.equal(previous[1], 'sentence 1');
-});
-
-test('a narrator with nothing to say posts nothing', async () => {
-  const s = slack();
-  await watchJob(config, job, {
-    read: reader([{ stages: [], steps: steps(9), done: false }, done({ steps: steps(9) })]),
-    ...s,
-    say: async () => '',
-    sleep: async () => {},
-  });
-  assert.ok(!s.posted.some((m) => /^$/.test(m.text)), 'no empty message is sent');
-});
-
-test('a milestone is posted as plainly as anything else', async () => {
+test('a stage line reaches the thread with nothing added to it', async () => {
+  const line = 'deploy: migration stalled after creating the postgres extensions, reading logs first';
   const s = slack();
   await watchJob(config, job, {
     read: reader([
-      { stages: ['triage: thin-shell — no command: key'], steps: [], done: false },
-      done({ stages: ['triage: thin-shell — no command: key'] }),
+      { stages: [line], steps: ['x'], done: false },
+      { stages: [line], steps: ['x'], done: true, exitCode: 0, log: '' },
     ]),
     ...s,
-    say: async () => '',
     sleep: async () => {},
   });
-  const milestone = s.posted.find((m) => /triage/.test(m.text));
-  assert.equal(milestone.text, 'triage: thin-shell — no command: key');
-  assert.doesNotMatch(milestone.text, /[*•]/, 'no bullet and no bold: one voice in the thread');
+  assert.equal(s.posted[0].text, line, 'verbatim: the watcher is a wire, not a voice');
+  assert.equal(s.posted[0].threadTs, '1.1');
 });
 
-test('each milestone is said once, however many times it is read', async () => {
+test('each stage is said once, however many times it is read', async () => {
+  const stages = ['triage: thin-shell', 'build: green'];
   const s = slack();
-  const stages = ['triage: x', 'pr: y'];
   await watchJob(config, job, {
     read: reader([
       { stages: stages.slice(0, 1), steps: [], done: false },
+      { stages: stages.slice(0, 1), steps: [], done: false },
       { stages, steps: [], done: false },
-      done({ stages }),
+      { stages, steps: [], done: true, exitCode: 0, log: '' },
     ]),
     ...s,
-    say: async () => '',
     sleep: async () => {},
   });
-  assert.equal(s.posted.filter((m) => m.text === 'triage: x').length, 1);
-  assert.equal(s.posted.filter((m) => m.text === 'pr: y').length, 1);
+  for (const line of stages) {
+    assert.equal(s.posted.filter((m) => m.text === line).length, 1, line);
+  }
+});
+
+test('what the agent did is never posted, only what it said about it', async () => {
+  const s = slack();
+  await watchJob(config, job, {
+    read: reader([
+      { stages: [], steps: ['searching for healthz in packages/twenty-server/src'], done: false },
+      { stages: [], steps: ['searching for healthz in packages/twenty-server/src'], done: true, exitCode: 0, log: '' },
+    ]),
+    ...s,
+    sleep: async () => {},
+  });
+  assert.ok(!s.posted.some((m) => /searching for healthz/.test(m.text)), 'the raw trace stays out of the thread');
 });
 
 test('the result arrives without anyone asking', async () => {
   const s = slack();
   const out = await watchJob(config, job, {
-    read: reader([done({ log: 'RESULT\nverdict: thin-shell\n' })]),
+    read: reader([{ stages: [], steps: [], done: true, exitCode: 0, log: 'RESULT\nverdict: thin-shell\n' }]),
     ...s,
-    say: async () => '',
     sleep: async () => {},
   });
   assert.equal(out.finished, true);
-  assert.ok(s.posted.length >= 1);
+  assert.match(s.posted.at(-1).text, /thin-shell/);
 });
 
 test('a Slack failure never ends the watch', async () => {
   const out = await watchJob(config, job, {
-    read: reader([{ stages: ['triage: x'], steps: steps(8), done: false }, done({ stages: ['triage: x'] })]),
-    post: async () => { throw new Error('ratelimited'); },
-    say: async () => 'a sentence',
+    read: reader([
+      { stages: ['triage: x'], steps: [], done: false },
+      { stages: ['triage: x'], steps: [], done: true, exitCode: 0, log: '' },
+    ]),
+    post: async () => {
+      throw new Error('ratelimited');
+    },
     sleep: async () => {},
   });
   assert.equal(out.finished, true);
 });
 
-test('a narrator that throws does not take the job report with it', async () => {
+test('a dropped channel is waited out, not treated as the end', async () => {
   const s = slack();
-  const out = await watchJob(config, job, {
-    read: reader([done({ steps: steps(8), log: 'RESULT\n' })]),
-    ...s,
-    say: async () => { throw new Error('anthropic is down'); },
-    sleep: async () => {},
-  });
+  let calls = 0;
+  const read = async () => {
+    calls += 1;
+    if (calls < 3) throw new Error('exec channel dropped');
+    return { stages: [], steps: [], done: true, exitCode: 0, log: 'RESULT\n' };
+  };
+  const out = await watchJob(config, job, { read, ...s, sleep: async () => {} });
+  assert.ok(calls >= 3);
   assert.equal(out.finished, true);
-  assert.ok(s.posted.length >= 1, 'the result still lands');
+});
+
+test('running out of patience is reported as still running, not as failure', async () => {
+  const s = slack();
+  let t = 0;
+  const out = await watchJob(config, job, {
+    read: reader([{ stages: [], steps: [], done: false, log: 'still going' }]),
+    ...s,
+    sleep: async () => {},
+    now: () => (t += 20_000),
+  });
+  assert.equal(out.finished, false);
+  assert.match(s.posted.at(-1).text, /NOT been killed/);
 });
