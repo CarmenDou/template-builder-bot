@@ -10,7 +10,8 @@ const STAGES = {
   approve: { ids: (c) => c.slackApproveBotIds, action: 'approve this' },
 };
 
-const PR_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
+// Owner and repo as GitHub allows them, and nothing else: the URL is put into a command.
+const PR_URL = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)$/;
 
 /**
  * Asks a review bot to look at a pull request, by posting one line in the
@@ -43,79 +44,85 @@ export async function askForReview(config, { prUrl, stage }, deps = {}) {
 // Where the agent box keeps its GitHub CLI, which is the one with a token.
 const GH = '/data/home/bin/gh';
 
-// Both review bots post as one GitHub account, so the review bot is told apart
-// by its format: every Codex review opens with this heading.
-const isCodexReview = (r) => /^\*\*Summary\*\*/.test(r?.body ?? '');
+// How much of each review to hand back. Enough for a reviewer's summary, findings
+// and verdict; a whole review of a large PR would crowd out the conversation.
+const BODY_LIMIT = 3000;
 
 /**
- * Findings under one heading: 0 for `(none)`, else the bullets, or null if absent.
- * The reviewer writes the heading two ways, `### Critical` and `**Critical**` on
- * a line of its own, sometimes in consecutive reviews of the same PR.
- */
-function findings(body, name) {
-  const heading = `(?:#{2,4}[ \\t]*${name}[^\\n]*|\\*\\*${name}[^*\\n]*\\*\\*[ \\t]*)\\n`;
-  const next = `\\n(?:#{2,4}[ \\t]|\\*\\*[A-Z][^*\\n]*\\*\\*[ \\t]*(?:\\n|$))`;
-  const m = body.match(new RegExp(`${heading}([\\s\\S]*?)(?=${next}|$)`, 'i'));
-  if (!m) return null;
-  const text = m[1].trim();
-  if (text === '' || /^\(none\)$/i.test(text)) return 0;
-  return (text.match(/^- /gm) ?? []).length;
-}
-
-/**
- * Where a PR stands with the review bots, from `gh pr view --json`.
+ * Everything people said on a PR after `since`, oldest first: reviews and plain
+ * comments alike, each with who wrote it, when, and whether it read the current
+ * head. Accounts GitHub marks as bots are left out: automatic reviewers such as
+ * cubic comment on every push, and one of them arriving first is not the answer
+ * to a review someone asked for. Codex and Claude post as an ordinary account.
  *
- * Clean means the latest Codex review looked at the current head and has no
- * Critical findings. The review's state is deliberately not part of it: once a
- * PR has had changes requested, GitHub keeps saying so until someone approves,
- * even after a later review finds nothing Critical. A review of an older commit
- * is reported but never clean: whatever was pushed since has not been read.
+ * Nothing here decides what a review means. An earlier version read the
+ * reviewer's verdict out of its markdown and missed a review whose headings were
+ * written `## Summary` instead of `**Summary**`, so the follower waited on an
+ * answer that had already come. The reader of this list is a model, and it can
+ * read a review.
  */
-export function summarizeReviews(pr) {
-  const reviews = pr?.reviews ?? [];
-  const head = pr?.headRefOid ?? null;
-  const approved = reviews.some((r) => r.state === 'APPROVED' && r.commit?.oid === head);
-  const latest = reviews.filter(isCodexReview).at(-1) ?? null;
-  if (!latest) return { reviewed: false, approved, head };
-
-  const body = latest.body;
-  const verdict = body.match(/\*\*Verdict\*\*\s*\n+\s*([^\n]+)/)?.[1]?.trim() ?? null;
-  const critical = findings(body, 'Critical');
-  const suggestions = findings(body, 'Suggestion');
-  const onHead = latest.commit?.oid === head;
-  return {
-    reviewed: true,
-    at: latest.submittedAt,
-    state: latest.state,
-    verdict,
-    critical,
-    suggestions,
-    onHead,
-    approved,
-    head,
-    clean: onHead && critical === 0,
-  };
+export function activitySince(pr, since = -Infinity) {
+  const head = pr?.head ?? null;
+  const person = (a) => a.type !== 'Bot';
+  const reviews = (pr?.reviews ?? []).filter(person).map((r) => ({
+    kind: 'review',
+    author: r.author,
+    at: r.at,
+    state: r.state,
+    onHead: r.commit === head,
+    body: r.body ?? '',
+  }));
+  const comments = (pr?.comments ?? []).filter(person).map((c) => ({
+    kind: 'comment',
+    author: c.author,
+    at: c.at,
+    state: null,
+    onHead: null,
+    body: c.body ?? '',
+  }));
+  return [...reviews, ...comments]
+    .filter((a) => Date.parse(a.at) > since)
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    .map((a) => ({ ...a, body: a.body.length > BODY_LIMIT ? `${a.body.slice(0, BODY_LIMIT)}…` : a.body }));
 }
 
 /**
- * Reads a PR's reviews on the agent box. With `after`, waits up to `waitMs` for a
- * Codex review submitted after that moment, so whoever asked for a review can
- * wait for its answer without sleeping on their side.
+ * The shell that gathers a PR's head, reviews and comments as one JSON object.
+ * The REST API rather than `gh pr view`, because only REST says which authors
+ * are bots.
+ */
+export function readPrScript(prUrl) {
+  const m = String(prUrl ?? '').match(PR_URL);
+  if (!m) throw new Error(`not a pull request url: ${prUrl}`);
+  const [, owner, repo, n] = m;
+  const api = `${GH} api`;
+  return [
+    `H=$(${api} repos/${owner}/${repo}/pulls/${n} --jq .head.sha)`,
+    `R=$(${api} 'repos/${owner}/${repo}/pulls/${n}/reviews?per_page=100' --jq '[.[] | {author: .user.login, type: .user.type, at: .submitted_at, state, commit: .commit_id, body}]')`,
+    `C=$(${api} 'repos/${owner}/${repo}/issues/${n}/comments?per_page=100' --jq '[.[] | {author: .user.login, type: .user.type, at: .created_at, body}]')`,
+    `printf '{"head":"%s","reviews":%s,"comments":%s}' "$H" "$R" "$C"`,
+  ].join('\n');
+}
+
+/**
+ * Reads a PR's reviews and comments on the agent box, where gh has a token. With
+ * `after`, waits up to `waitMs` for anything newer than that moment, so whoever
+ * asked for a review can wait for the answer without sleeping on their side.
+ * Without it, returns the last few things said.
  */
 export async function reviewStatus(config, { prUrl, after, waitMs = 120000 }, deps = {}) {
   const { run = execInBox, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = () => Date.now() } = deps;
-  if (!PR_URL.test(String(prUrl ?? ''))) throw new Error(`not a pull request url: ${prUrl}`);
+  const script = readPrScript(prUrl);
   const since = after ? Date.parse(after) : NaN;
-  const deadline = now() + (Number.isNaN(since) ? 0 : waitMs);
+  const waiting = !Number.isNaN(since);
+  const deadline = now() + (waiting ? waitMs : 0);
 
   for (;;) {
-    const { stdout } = await run(config, `${GH} pr view ${prUrl} --json reviews,headRefOid,state,isDraft`, {
-      timeoutMs: 60000,
-    });
-    const status = summarizeReviews(JSON.parse(stdout));
-    const fresh = Number.isNaN(since) || (status.reviewed && Date.parse(status.at) > since);
-    if (fresh) return { ...status, waiting: false };
-    if (now() >= deadline) return { ...status, waiting: true };
+    const { stdout } = await run(config, script, { timeoutMs: 60000 });
+    const pr = JSON.parse(stdout);
+    const activity = waiting ? activitySince(pr, since) : activitySince(pr).slice(-3);
+    if (!waiting || activity.length > 0) return { activity, waiting: false };
+    if (now() >= deadline) return { activity: [], waiting: true };
     await sleep(20000);
   }
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { askForReview, summarizeReviews, reviewStatus } from '../src/review.js';
+import { askForReview, activitySince, readPrScript, reviewStatus } from '../src/review.js';
 
 const config = {
   slackBotToken: 'xoxb-test',
@@ -81,134 +81,6 @@ test('an unknown stage names the two there are', async () => {
   assert.equal(sent.length, 0);
 });
 
-// Shaped like real Codex reviews: one clean (insta-platform #508), one with a Critical (#503).
-const CLEAN = `**Summary**
-
-The narrower row lock removes the reported deadlock.
-
-**Findings**
-
-### Critical
-
-(none)
-
-### Suggestion
-
-- \`test/a.test.ts:66\` — consider a concurrent case.
-
-### Information
-
-- No security-relevant changes.
-
-**Verdict**
-
-Approved: no Critical findings; the suggestion is non-blocking.`;
-
-const BLOCKED = `**Summary**
-
-The implementation is right but a guard is missing.
-
-**Findings**
-
-### Critical
-
-- **Missing clean-room regression guard.** Add the insta-e2e check.
-
-### Suggestion
-
-### Information
-
-- Performance is fine.
-
-**Verdict**
-
-Changes requested: one Critical finding.`;
-
-const review = (state, body, oid, at = '2026-09-21T17:38:51Z') => ({ state, body, commit: { oid }, submittedAt: at });
-
-test('a Codex review with no Critical findings on the head is clean', () => {
-  const s = summarizeReviews({ headRefOid: 'H', reviews: [review('COMMENTED', CLEAN, 'H')] });
-  assert.equal(s.reviewed, true);
-  assert.equal(s.critical, 0);
-  assert.equal(s.suggestions, 1);
-  assert.equal(s.onHead, true);
-  assert.equal(s.clean, true);
-  assert.match(s.verdict, /^Approved: no Critical findings/);
-});
-
-test('a Critical finding is not clean, and an empty Suggestion section counts as none', () => {
-  const s = summarizeReviews({ headRefOid: 'H', reviews: [review('CHANGES_REQUESTED', BLOCKED, 'H')] });
-  assert.equal(s.critical, 1);
-  assert.equal(s.suggestions, 0);
-  assert.equal(s.clean, false);
-});
-
-test('Critical 0 is clean even while the state still says changes requested', () => {
-  // Once a PR has had changes requested, GitHub keeps that state until an
-  // approval, even after a later review finds nothing Critical. Going by the
-  // state would hold a fixed PR back forever.
-  const s = summarizeReviews({
-    headRefOid: 'H2',
-    reviews: [review('CHANGES_REQUESTED', BLOCKED, 'H1'), review('CHANGES_REQUESTED', CLEAN, 'H2', '2026-09-22T00:00:00Z')],
-  });
-  assert.equal(s.state, 'CHANGES_REQUESTED');
-  assert.equal(s.critical, 0);
-  assert.equal(s.clean, true);
-});
-
-test('a clean review of an older commit is not clean: newer code was never read', () => {
-  const s = summarizeReviews({ headRefOid: 'NEW', reviews: [review('COMMENTED', CLEAN, 'OLD')] });
-  assert.equal(s.onHead, false);
-  assert.equal(s.clean, false);
-});
-
-test('an approval counts only on the current head, and is not mistaken for a review', () => {
-  const s = summarizeReviews({
-    headRefOid: 'H',
-    reviews: [review('COMMENTED', CLEAN, 'H'), review('APPROVED', 'LGTM - approved.', 'H')],
-  });
-  assert.equal(s.approved, true);
-  assert.match(s.verdict, /^Approved: no Critical/, 'the latest Codex review, not the approval');
-  const stale = summarizeReviews({ headRefOid: 'H2', reviews: [review('APPROVED', 'LGTM - approved.', 'H')] });
-  assert.equal(stale.approved, false);
-  assert.equal(stale.reviewed, false);
-});
-
-test('reviewStatus waits for a review newer than the ask, then stops', async () => {
-  const pages = [
-    { headRefOid: 'H', reviews: [review('COMMENTED', CLEAN, 'H', '2026-09-20T00:00:00Z')] },
-    { headRefOid: 'H', reviews: [review('COMMENTED', CLEAN, 'H', '2026-09-23T08:00:00Z')] },
-  ];
-  let reads = 0;
-  let script = '';
-  const run = async (_c, s) => ((script = s), { stdout: JSON.stringify(pages[Math.min(reads++, 1)]) });
-  const r = await reviewStatus(
-    {},
-    { prUrl: 'https://github.com/InsForge/instacloud-oss/pull/149', after: '2026-09-23T07:30:00Z' },
-    { run, sleep: async () => {}, now: () => 0 },
-  );
-  assert.equal(reads, 2, 'the older review is not taken as the answer');
-  assert.equal(r.waiting, false);
-  assert.equal(r.at, '2026-09-23T08:00:00Z');
-  assert.match(script, /^\/data\/home\/bin\/gh pr view https:\/\/github\.com\/InsForge\/instacloud-oss\/pull\/149 --json /);
-});
-
-test('reviewStatus gives up waiting at the deadline and says so', async () => {
-  let t = 0;
-  const run = async () => ({ stdout: JSON.stringify({ headRefOid: 'H', reviews: [] }) });
-  const r = await reviewStatus({}, { prUrl: 'https://github.com/a/b/pull/1', after: '2026-09-23T07:30:00Z', waitMs: 60000 }, {
-    run, sleep: async () => {}, now: () => (t += 30000),
-  });
-  assert.equal(r.waiting, true);
-});
-
-test('reviewStatus refuses anything that is not a PR url before touching the box', async () => {
-  await assert.rejects(
-    () => reviewStatus({}, { prUrl: 'https://github.com/a/b/pull/1; rm -rf /' }, { run: async () => assert.fail('must not run') }),
-    /not a pull request url/,
-  );
-});
-
 test('an ask says when it was sent, so its answer can be waited for', async () => {
   const { post } = capture();
   const out = await askForReview(config, { prUrl: PR, stage: 'review' }, { post, now: () => Date.parse('2026-09-23T07:30:00Z') });
@@ -222,33 +94,75 @@ test('approve is sent whatever the review said: the decision is the person\'s', 
   assert.equal(sent.length, 1);
 });
 
-test('the bold heading style is read too, as the reviewer sometimes writes it', () => {
-  // insta-platform #503's second review: `**Critical**` on its own line, not `### Critical`.
-  const BOLD = `**Summary**
+// Shaped like the REST API as readPrScript gathers it, from PR #146 on 09-23: an
+// automatic reviewer that is a bot, then Codex twice under its ordinary account.
+const pr = {
+  head: 'NEW',
+  reviews: [
+    { author: 'cubic-dev-ai[bot]', type: 'Bot', at: '2026-09-23T18:03:55Z', state: 'COMMENTED', commit: 'OLD', body: '**3 issues found**' },
+    { author: 'jwfing', type: 'User', at: '2026-09-23T18:04:15Z', state: 'CHANGES_REQUESTED', commit: 'OLD', body: '**Summary**\n\n**Critical**\n\n- ttyd prints the password' },
+    { author: 'jwfing', type: 'User', at: '2026-09-23T18:33:57Z', state: 'COMMENTED', commit: 'NEW', body: '## Summary\n\n## Verdict\n\n**Approved** — zero Critical findings.' },
+  ],
+  comments: [
+    { author: 'someone', type: 'User', at: '2026-09-23T18:40:00Z', body: 'looks good to me' },
+    { author: 'github-actions[bot]', type: 'Bot', at: '2026-09-23T18:41:00Z', body: 'build passed' },
+  ],
+};
 
-This focused change moves the rejection ahead of execution.
+test('only what people said after the ask comes back, reviews and comments together, oldest first', () => {
+  const a = activitySince(pr, Date.parse('2026-09-23T18:28:19Z'));
+  assert.deepEqual(a.map((x) => [x.kind, x.author]), [['review', 'jwfing'], ['comment', 'someone']]);
+  assert.equal(a[0].onHead, true, 'and whether a review read the current head');
+  assert.match(a[0].body, /Approved\*\* — zero Critical/, 'in full, whatever its headings look like');
+});
 
-**Findings**
+test('bots are left out, however early they answer', () => {
+  const everyone = activitySince(pr);
+  assert.ok(!everyone.some((x) => /\[bot\]/.test(x.author)), 'cubic and github-actions are not reviewers here');
+  assert.equal(everyone.filter((x) => x.author === 'jwfing').length, 2, 'the account Codex and Claude post as is a person to GitHub');
+});
 
-**Critical**
+test('a review of an older commit says so', () => {
+  const a = activitySince(pr);
+  assert.equal(a.find((x) => x.state === 'CHANGES_REQUESTED').onHead, false);
+});
 
-(none)
+test('a very long review is cut, so it does not crowd out the conversation', () => {
+  const long = { head: 'H', reviews: [{ author: 'jwfing', type: 'User', at: '2026-09-23T00:00:00Z', state: 'COMMENTED', commit: 'H', body: 'x'.repeat(10000) }], comments: [] };
+  assert.ok(activitySince(long)[0].body.length <= 3001);
+});
 
-**Suggestion**
+test('reviewStatus waits for something a person said after the ask, then stops', async () => {
+  const pages = [
+    { head: 'H', reviews: [pr.reviews[0]], comments: [] },
+    { head: 'H', reviews: [pr.reviews[0], { ...pr.reviews[2], commit: 'H' }], comments: [] },
+  ];
+  let reads = 0;
+  const run = async () => ({ stdout: JSON.stringify(pages[Math.min(reads++, 1)]) });
+  const r = await reviewStatus({}, { prUrl: 'https://github.com/InsForge/instacloud-oss/pull/146', after: '2026-09-23T18:00:00Z' }, { run, sleep: async () => {}, now: () => 0 });
+  assert.equal(reads, 2, "the bot's earlier review is not taken as the answer");
+  assert.equal(r.waiting, false);
+  assert.equal(r.activity[0].author, 'jwfing');
+});
 
-(none)
+test('reviewStatus gives up waiting at the deadline and says so', async () => {
+  let t = 0;
+  const run = async () => ({ stdout: JSON.stringify({ head: 'H', reviews: [], comments: [] }) });
+  const r = await reviewStatus({}, { prUrl: 'https://github.com/a/b/pull/1', after: '2026-09-23T07:30:00Z', waitMs: 60000 }, {
+    run, sleep: async () => {}, now: () => (t += 30000),
+  });
+  assert.equal(r.waiting, true);
+});
 
-**Information**
+test('the reader asks the REST API, which is what says who is a bot', () => {
+  const script = readPrScript('https://github.com/InsForge/instacloud-oss/pull/146');
+  assert.match(script, /api 'repos\/InsForge\/instacloud-oss\/pulls\/146\/reviews\?per_page=100'/);
+  assert.match(script, /api 'repos\/InsForge\/instacloud-oss\/issues\/146\/comments\?per_page=100'/);
+  assert.match(script, /type: \.user\.type/);
+});
 
-- **Security:** No authentication or secret-handling changes.
-- **Performance:** No new queries.
-
-**Verdict**
-
-Approved — no Critical findings.`;
-  const s = summarizeReviews({ headRefOid: 'H', reviews: [review('COMMENTED', BOLD, 'H')] });
-  assert.equal(s.critical, 0, 'not null: the section was found');
-  assert.equal(s.suggestions, 0);
-  assert.equal(s.clean, true);
-  assert.equal(s.verdict, 'Approved — no Critical findings.');
+test('nothing but an owner, a repo and a number can reach the command', () => {
+  for (const bad of ['https://github.com/a;rm -rf x/b/pull/1', 'https://github.com/a/b/pull/1; ls', 'https://github.com/a b/c/pull/1']) {
+    assert.throws(() => readPrScript(bad), /not a pull request url/, bad);
+  }
 });

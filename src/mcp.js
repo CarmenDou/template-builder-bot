@@ -108,7 +108,7 @@ const TOOLS = [
   {
     name: 'review_status',
     description:
-      "Where a template PR stands with the review bots: the latest Codex review's verdict, how many Critical findings and suggestions it has, whether it read the current head or an older commit, and whether the PR is approved. After ask_for_review stage review, pass the `asked at` time from its reply as `after`: it waits up to two minutes for a review newer than that, and if none has come yet, call it again with the same `after`. Clean means no Critical findings on the current head. This is for telling the person where things stand in a sentence or two, not a gate: approve is sent when they say so, whatever this shows, and never on your own.",
+      "What people have said on a template PR since you asked for a review. Pass the `asked at` time from ask_for_review's reply as `after`: it waits up to two minutes for any review or comment newer than that and returns each one in full, with who wrote it, when, its state and whether it read the current head. Accounts GitHub marks as bots, such as cubic, are left out; Codex and Claude post as the ordinary account jwfing. If nothing has come yet, call again with the same `after`. Read what came and tell the person, in a sentence or two, what the reviewer concluded and how many Critical findings it raised. This is for telling them where things stand, not a gate: approve is sent when they say so, and never on your own.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -254,25 +254,16 @@ async function callTool(config, name, args, deps) {
       } catch (error) {
         return failure(`Could not read that PR: ${error.message.slice(0, 160)}`);
       }
-      if (!r.reviewed || r.waiting) {
-        return text(
-          args?.after
-            ? `No Codex review since ${args.after} yet. Call review_status again with the same after.`
-            : 'No Codex review on this PR yet.',
-        );
+      if (r.waiting) {
+        return text(`Nothing from a person since ${args.after} yet. Call review_status again with the same after.`);
       }
-      const counts = [
-        `Critical ${r.critical ?? 'unknown'}`,
-        `suggestions ${r.suggestions ?? 'unknown'}`,
-      ].join(', ');
-      return text(
-        [
-          `Codex review (${r.state}, ${r.at}): ${r.verdict ?? 'no verdict line'}`,
-          `${counts}; ${r.onHead ? 'on the current head' : 'on an OLDER commit, so whatever was pushed since has not been reviewed'}`,
-          `clean: ${r.clean ? 'yes' : 'no'}`,
-          `approved: ${r.approved ? 'yes' : 'no'}`,
-        ].join('\n'),
-      );
+      if (r.activity.length === 0) return text('No one has reviewed or commented on this PR yet.');
+      const blocks = r.activity.map((a) => {
+        const what = a.kind === 'review' ? `review, ${a.state}, ${a.onHead ? 'on the current head' : 'on an OLDER commit'}` : 'comment';
+        return `--- ${what}, by ${a.author} at ${a.at}\n${a.body}`;
+      });
+      const heading = args?.after ? `${r.activity.length} new since ${args.after}:` : 'Most recent:';
+      return text(`${heading}\n\n${blocks.join('\n\n')}`);
     }
 
     case 'stop_job':
