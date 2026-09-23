@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newJobId, buildTask, parseResult, startJob, readJob, jobFeed, stageInstructions } from '../src/agent.js';
+import { newJobId, buildTask, buildFollowupTask, buildResumePrompt, parseResult, startJob, readJob, jobFeed, stageInstructions } from '../src/agent.js';
 
 const config = {
   instaBin: 'insta',
@@ -317,4 +317,20 @@ test('jobFeed never puts anything but a job id and numbers into the command', as
 test('an answer that is not job-feed output is an error, not a guess', async () => {
   const run = async () => ({ stdout: 'bash: job-feed: No such file or directory' });
   await assert.rejects(() => jobFeed({}, 'J1', {}, { run }), /something else/);
+});
+
+test('a job may load skills, and review fixes are pointed at the one for them', () => {
+  const task = buildFollowupTask({ pr: 149, extra: 'address the Critical from Codex', dir: '/data/work/jobs/J1' });
+  assert.match(task, /use the fixing-review-feedback skill before you touch anything/);
+});
+
+test('a finished job picked back up for review changes is pointed at the skill too', () => {
+  assert.match(buildResumePrompt('Codex found a Critical, fix it'), /fixing-review-feedback skill/);
+});
+
+test('the runner lets a job load skills', async () => {
+  let script = '';
+  await startJob({}, { url: 'https://github.com/a/b', slack: {} }, { run: async (_c, s) => ((script = s), { stdout: 'started' }), jobId: 'J1' });
+  const runner = Buffer.from(script.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \S+run\.sh/)[1], 'base64').toString();
+  assert.match(runner, /--allowedTools 'Skill' /);
 });

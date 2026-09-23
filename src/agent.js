@@ -29,6 +29,9 @@ const JOB_FEED_JS = readFileSync(new URL('./box/job-feed.js', import.meta.url), 
 // bypassing permission checks: this box holds a GitHub token that can push to
 // instacloud-oss and a platform key with full access to its org.
 const ALLOWED_TOOLS = [
+  // Without it the skills on the box are never loaded: a job used the CLI 88
+  // times and a skill zero times, because nothing let it.
+  'Skill',
   'Read',
   'Write',
   'Edit',
@@ -105,7 +108,7 @@ export function buildResumePrompt(message) {
 ${message}
 
 Everything you did is still here: this job directory, your clones, the project you deployed into,
-the credentials you created and the PR. Do what they ask, on those same things. Check the state they
+the credentials you created and the PR. Do what they ask, on those same things. If what they want changed came from a review, use the fixing-review-feedback skill before you touch anything: it is how the person who reads these PRs fixes review feedback. Check the state they
 are actually in before you change anything, since time has passed and someone may have touched them.
 
 Append a line to your stage file for each thing you do, as before, so they can follow along. Finish
@@ -232,6 +235,8 @@ check that branch out. Do not reuse another job's clone.
 
 What the reviewer wants changed:
 ${extra || '(they did not say; read the PR comments with `gh pr view ' + pr + ' --comments`)'}
+
+If what they want changed came from a review, use the fixing-review-feedback skill before you touch anything: it is how the person who reads these PRs fixes review feedback.
 
 Make the change, commit and push to the same branch (pushing is what rebuilds the image), wait for
 the build, redeploy and verify again the same way as the first time, and update the PR body so its
