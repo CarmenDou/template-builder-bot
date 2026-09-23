@@ -37,25 +37,6 @@ export async function postMessage({ token, channel, threadTs, text, fetchImpl = 
 }
 
 /**
- * Rewrites a message already in the thread. The live trace is one message that
- * keeps changing rather than a hundred that scroll: a 25-minute job makes well
- * over a hundred tool calls, and posting each one buries everything else.
- */
-export async function updateMessage({ token, channel, ts, text, fetchImpl = fetch }) {
-  const response = await fetchImpl('https://slack.com/api/chat.update', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json; charset=utf-8',
-    },
-    body: JSON.stringify({ channel, ts, text }),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!body.ok) throw new Error(`chat.update failed: ${body.error ?? response.status}`);
-  return body;
-}
-
-/**
  * The replies in one thread, oldest first. Needs the channels:history scope.
  * Returns [] rather than throwing: losing the context should degrade the reply,
  * not fail the request.

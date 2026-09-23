@@ -148,3 +148,28 @@ test('an unknown method is a JSON-RPC error', async () => {
   const out = await rpc('tools/explode');
   assert.equal(out.error.code, -32601);
 });
+
+test('a job is followed by whoever started it, so the start tools take no thread to post into', async () => {
+  const start = (await handleRpc({}, { jsonrpc: '2.0', id: 1, method: 'tools/list' })).result.tools.filter((t) =>
+    ['start_template_job', 'continue_template_pr'].includes(t.name),
+  );
+  for (const t of start) {
+    const props = Object.keys(t.inputSchema.properties);
+    assert.ok(!props.some((p) => /slack/i.test(p)), `${t.name} has no slack parameter`);
+  }
+});
+
+test('starting a job says how to follow it', async () => {
+  const deps = {
+    start: async () => ({ jobId: 'J42' }),
+    running: async () => [],
+  };
+  const res = await handleRpc(
+    {},
+    { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'start_template_job', arguments: { repo_url: 'https://github.com/a/b' } } },
+    deps,
+  );
+  const said = res.result.content[0].text;
+  assert.match(said, /job-feed J42 0 0/);
+  assert.match(said, /says nothing on its own/);
+});

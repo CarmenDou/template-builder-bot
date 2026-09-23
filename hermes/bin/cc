@@ -1,0 +1,16 @@
+#!/bin/sh
+# Run one command on the claude-code box: cc '<command>'
+# Everything it needs is under /data/cc-ssh, on the volume, in a HOME nothing else logs into. It
+# renews the short-lived certificate itself with an absolute path, because the config block's own
+# renewal calls a bare `insta` that is not on PATH here, and it names the config with -F because
+# ssh finds ~/.ssh through the passwd entry, whose home is on the root disk.
+export HOME=/data/cc-ssh
+# The config block renews through a bare insta; putting it and node on PATH lets that work too.
+export PATH=/data/tools/node_modules/.bin:/usr/local/bin:$PATH
+INSTA=/data/tools/node_modules/.bin/insta
+CFG=$HOME/.ssh/config
+ALIAS=claude-code.insta
+run() { ssh -F "$CFG" -o BatchMode=yes -o ConnectTimeout=25 -o ControlMaster=no "$ALIAS" "$@"; }
+run "$@" 2>/tmp/cc.err && exit 0
+INSTA_PROJECT_ID=e02e906d-fa84-4f6f-aacc-78171413bbba "$INSTA" compute ssh claude-code --ensure-cert "$ALIAS" >/dev/null 2>&1
+run "$@"

@@ -272,3 +272,17 @@ test('the task tells the agent where to append its stages', () => {
   assert.match(task, /triage:/);
   assert.match(task, /Append, never rewrite/);
 });
+
+test('every start puts the current job-feed on the box, where the follower reads from', async () => {
+  let script = '';
+  await startJob(
+    { agentService: 'claude-code', instaBin: 'insta' },
+    { url: 'https://github.com/a/b', slack: {} },
+    { run: async (_c, s) => ((script = s), { stdout: 'started' }), jobId: 'J1', sessionId: 'S1' },
+  );
+  const m = script.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \/data\/home\/bin\/job-feed/);
+  assert.ok(m, 'job-feed is written to a fixed path, not into the job dir');
+  const body = Buffer.from(m[1], 'base64').toString();
+  assert.match(body, /next: \$\{nextOffset\}/, 'and it is the feed that hands back its own offsets');
+  assert.match(script, /chmod 755 \/data\/home\/bin\/job-feed/);
+});
