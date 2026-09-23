@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boxCommand } from '../src/agent.js';
+import { boxCommand, execInBox } from '../src/agent.js';
 import { loadConfig } from '../src/config.js';
 
 const base = {
@@ -53,4 +53,41 @@ test('ssh never inherits the project override, which is a CLI notion', () => {
   assert.equal(boxCommand(config, 'x').env.INSTA_PROJECT_ID, undefined);
   const viaCli = loadConfig(base, { needsSlack: false });
   assert.equal(boxCommand(viaCli, 'x').env.INSTA_PROJECT_ID, 'P1');
+});
+
+test('an ssh failure renews the certificate and tries once more', async () => {
+  const config = loadConfig({ ...base, SSH_CONFIG: '/c' }, { needsSlack: false });
+  let attempts = 0;
+  let renewals = 0;
+  const run = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('Permission denied (publickey)');
+    return { stdout: 'ok', stderr: '' };
+  };
+  const out = await execInBox(config, 'uname -n', {}, { run, renew: async () => void (renewals += 1) });
+  assert.equal(out.stdout, 'ok');
+  assert.equal(attempts, 2, 'exactly one retry');
+  assert.equal(renewals, 1);
+});
+
+test('when renewal itself fails the caller sees the ssh error, not the renewal one', async () => {
+  const config = loadConfig({ ...base, SSH_CONFIG: '/c' }, { needsSlack: false });
+  const run = async () => {
+    throw new Error('Permission denied (publickey)');
+  };
+  const renew = async () => {
+    throw new Error('not logged in');
+  };
+  await assert.rejects(() => execInBox(config, 'x', {}, { run, renew }), /publickey/);
+});
+
+test('the CLI transport never retries, because there is no certificate to renew', async () => {
+  const config = loadConfig(base, { needsSlack: false });
+  let attempts = 0;
+  const run = async () => {
+    attempts += 1;
+    throw new Error('502');
+  };
+  await assert.rejects(() => execInBox(config, 'x', {}, { run, renew: async () => assert.fail('must not renew') }));
+  assert.equal(attempts, 1);
 });
