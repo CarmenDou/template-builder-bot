@@ -5,4 +5,4 @@
 # twice and ran half the line on this machine instead of that one.
 case "$1" in ''|*[!A-Za-z0-9_-]*) echo "usage: follow <jobId> <offset> <stagesSeen>"; exit 2 ;; esac
 case "${2:-0}${3:-0}" in *[!0-9]*) echo "offset and stagesSeen are numbers"; exit 2 ;; esac
-exec /data/.hermes/bin/cc /data/home/bin/job-feed "$1" "${2:-0}" "${3:-0}" 45
+exec /data/.hermes/bin/cc /data/home/bin/job-feed "$1" "${2:-0}" "${3:-0}" 20

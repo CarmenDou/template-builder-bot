@@ -291,7 +291,7 @@ test('jobFeed asks the box to wait, and reads its offsets back', async () => {
   let script = '';
   const run = async (_c, s) => ((script = s), { stdout: 'stage: pr: https://x/1\nsaid: waiting on CI\nnext: 4096 3 status: running\n' });
   const f = await jobFeed({}, 'J1', { offset: 10, stages: 2 }, { run });
-  assert.equal(script, '/data/home/bin/job-feed J1 10 2 45');
+  assert.equal(script, '/data/home/bin/job-feed J1 10 2 20');
   assert.deepEqual(f.activity, ['stage: pr: https://x/1', 'said: waiting on CI']);
   assert.equal(f.offset, 4096);
   assert.equal(f.stages, 3);
@@ -311,7 +311,7 @@ test('jobFeed never puts anything but a job id and numbers into the command', as
   await assert.rejects(() => jobFeed({}, 'J1; rm -rf /', {}, { run }), /not a job id/);
   let script = '';
   await jobFeed({}, 'J1', { offset: '3; ls', stages: -4 }, { run: async (_c, s) => ((script = s), { stdout: 'next: 0 0 status: running' }) });
-  assert.equal(script, '/data/home/bin/job-feed J1 0 0 45');
+  assert.equal(script, '/data/home/bin/job-feed J1 0 0 20');
 });
 
 test('an answer that is not job-feed output is an error, not a guess', async () => {

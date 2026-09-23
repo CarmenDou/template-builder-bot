@@ -464,6 +464,12 @@ export async function steerJob(config, jobId, message, deps = {}) {
   return stdout.trim();
 }
 
+// How long one follow_job call waits for something to happen. It is also the
+// longest a person waits to be heard: a message sent mid-run reaches the
+// follower only between calls, and at 45 seconds, plus a follower's own sleep,
+// "stop" took a minute and a half to land.
+export const FOLLOW_WAIT_SECONDS = 20;
+
 /**
  * What a job did since the caller last looked, waiting up to `waitSeconds` for it
  * to do something. Answers early when a milestone lands or the job ends.
@@ -472,7 +478,7 @@ export async function steerJob(config, jobId, message, deps = {}) {
  * in a loop and no sleep of its own to get wrong. `offset` and `stages` come back
  * in the result and go straight into the next call.
  */
-export async function jobFeed(config, jobId, { offset = 0, stages = 0, waitSeconds = 45 } = {}, deps = {}) {
+export async function jobFeed(config, jobId, { offset = 0, stages = 0, waitSeconds = FOLLOW_WAIT_SECONDS } = {}, deps = {}) {
   const { run = execInBox } = deps;
   if (!/^[\w-]+$/.test(String(jobId))) throw new Error(`not a job id: ${jobId}`);
   const n = (v) => Math.max(0, Math.floor(Number(v) || 0));
