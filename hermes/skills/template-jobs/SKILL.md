@@ -77,5 +77,8 @@ anyone is watching or not, so a "stop" answered only with words leaves it runnin
 
 ## After a person has looked at the draft
 
-Only when they say to send it for review: `ask_for_review` with stage `review` first. Only after
-that comes back clean and they say so: stage `approve`. Never on your own because a job finished.
+Only when they say to send it for review: `ask_for_review` with stage `review`, then `review_status`
+with the `asked at` time from its reply, and tell them in a sentence or two what Codex found. When
+they say approve: stage `approve`, whatever the review showed; if Critical findings are still open,
+mention them in the same sentence, but send it. Their word decides, not the review. Never ping
+either bot on your own because a job finished.

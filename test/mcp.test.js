@@ -24,12 +24,13 @@ test('every tool says what it is for, and none of them can delete', () => {
     'follow_job',
     'list_running_jobs',
     'read_job',
+    'review_status',
     'start_template_job',
     'steer_job',
     'stop_job',
   ]);
   // The box holds a platform key for the whole org. Nothing here may reach it:
-  // a caller can only do these eight things, whatever it is asked to do.
+  // a caller can only do these nine things, whatever it is asked to do.
   const surface = JSON.stringify(TOOLS);
   assert.ok(!/delete|remove|destroy/i.test(surface), 'no destructive verb is offered');
   for (const t of TOOLS) assert.ok(t.description.length > 60, `${t.name} explains itself`);
@@ -233,4 +234,41 @@ test('steer_job is described as the way to reach what a job built', () => {
   assert.match(d, /AND for anything afterwards about what a job built/);
   assert.match(d, /Do not try to do those yourself from here/);
   assert.match(d, /follow it with follow_job/);
+});
+
+test('review_status reports the verdict and says plainly whether it is clean', async () => {
+  const reviews = async () => ({
+    reviewed: true, waiting: false, at: '2026-09-21T17:38:51Z', state: 'COMMENTED',
+    verdict: 'Approved: no Critical findings.', critical: 0, suggestions: 1, onHead: true, approved: false, clean: true,
+  });
+  const said = (await call('review_status', { pr_url: 'https://github.com/InsForge/instacloud-oss/pull/149' }, { reviews })).result.content[0].text;
+  assert.match(said, /Approved: no Critical findings/);
+  assert.match(said, /Critical 0, suggestions 1; on the current head/);
+  assert.match(said, /clean: yes/);
+  assert.match(said, /approved: no/);
+});
+
+test('a review of an older commit is called out, because newer code was never read', async () => {
+  const reviews = async () => ({
+    reviewed: true, waiting: false, at: 'T', state: 'COMMENTED', verdict: 'v', critical: 0, suggestions: 0, onHead: false, approved: false, clean: false,
+  });
+  const said = (await call('review_status', { pr_url: 'https://github.com/a/b/pull/1' }, { reviews })).result.content[0].text;
+  assert.match(said, /OLDER commit/);
+  assert.match(said, /clean: no/);
+});
+
+test('waiting for a review that has not come yet says to call again', async () => {
+  const reviews = async () => ({ reviewed: false, waiting: true, approved: false });
+  const said = (await call('review_status', { pr_url: 'https://github.com/a/b/pull/1', after: '2026-09-23T07:30:00Z' }, { reviews })).result.content[0].text;
+  assert.match(said, /No Codex review since 2026-09-23T07:30:00Z yet\. Call review_status again with the same after/);
+});
+
+test('the review result is reported, not used as a gate on the person', () => {
+  const status = TOOLS.find((t) => t.name === 'review_status').description;
+  assert.match(status, /not a gate/);
+  assert.match(status, /never on your own/, 'nobody asked means nobody is pinged');
+  const ask = TOOLS.find((t) => t.name === 'ask_for_review').description;
+  assert.match(ask, /Their word is what counts, not the review's result/);
+  assert.match(ask, /even with Critical findings open/);
+  assert.doesNotMatch(ask, /only once that comes back clean/);
 });
