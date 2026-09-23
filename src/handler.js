@@ -94,7 +94,7 @@ export async function handleMention({ event, config, deps = {} }) {
   // what they said and carries on, so the guard holds and the thread still works.
   const handOver = async (busy, said) => {
     const outcome = await steer(config, busy.jobId, said).catch((error) => `failed: ${error.message}`);
-    if (!/^steered/.test(outcome)) {
+    if (!/^(steered|resumed)/.test(outcome)) {
       return {
         reply: `I could not pass that to the agent working on \`${busy.url}\` (job \`${busy.jobId}\`): ${outcome}. It is still running.`,
         job: null,

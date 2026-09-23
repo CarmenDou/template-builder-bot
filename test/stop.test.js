@@ -89,19 +89,26 @@ test('stopJob kills the group and leaves a finished marker', async () => {
   assert.match(script, /already finished/, 'a finished job is not killed');
 });
 
-test('steerJob restarts the agent on the same session and leaves the job open', async () => {
+// The two prompts a steer can hand over, in the order the script writes them:
+// the one for a finished job, then the one for a running one.
+const steerPrompts = (script) =>
+  [...script.matchAll(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \S+steer\.txt/g)].map((m) =>
+    Buffer.from(m[1], 'base64').toString(),
+  );
+
+test('steerJob restarts a running agent on the same session and leaves the job open', async () => {
   let script = null;
   const run = async (_c, s) => {
     script = s;
-    return { stdout: 'steered' };
+    return { stdout: 'steered 100 2' };
   };
   const out = await steerJob(config, 'J1', 'stop using ttyd, it serves HTTP already', { run });
-  assert.equal(out, 'steered');
+  assert.equal(out, 'steered 100 2');
 
   assert.match(script, /kill -TERM -"\$\(cat \S+pid\)"/, 'the in-flight step is killed');
   assert.ok(
     !/echo \d+ > \S+exit\.code/.test(script),
-    'writing exit.code would tell the poller the job finished and orphan the restart',
+    'writing exit.code would tell the follower the job finished and orphan the restart',
   );
 
   const runner = Buffer.from(
@@ -115,24 +122,35 @@ test('steerJob restarts the agent on the same session and leaves the job open', 
     'the resumed run goes through the same splitter and appends, so the trace spans both runs',
   );
 
-  const steerText = Buffer.from(
-    script.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \S+steer\.txt/)[1],
-    'base64',
-  ).toString();
-  assert.match(steerText, /stop using ttyd/, 'carries what the person said');
-  assert.match(steerText, /carry on with the same job/i, 'and the instruction to continue');
-  assert.match(steerText, /before you act/i, 'and to look at what it left behind before acting');
+  const [, during] = steerPrompts(script);
+  assert.match(during, /stop using ttyd/, 'carries what the person said');
+  assert.match(during, /carry on with the same job/i, 'and the instruction to continue');
+  assert.match(during, /before you act/i, 'and to look at what it left behind before acting');
 });
 
-test('steerJob refuses a job that is over or was never started', async () => {
+test('a finished job is picked back up by its own agent, which owns what it built', async () => {
+  let script = null;
+  await steerJob(config, 'J1', 'delete the seed company you created', {
+    run: async (_c, s) => ((script = s), { stdout: 'resumed 5000 9' }),
+  });
+  assert.match(script, /if \[ -f \S+exit\.code \]; then\n {2}mode=resumed/, 'a finished job is resumed, not refused');
+  assert.match(script, /rm -f \S+exit\.code \S+claude\.exit/, 'so a follower sees the new stretch as running');
+  const resumedBranch = script.slice(script.indexOf('mode=resumed'), script.indexOf('else'));
+  assert.doesNotMatch(resumedBranch, /kill/, 'there is nothing to interrupt');
+
+  const [after] = steerPrompts(script);
+  assert.match(after, /delete the seed company you created/, 'carries what the person said');
+  assert.match(after, /has finished/, 'tells it the job is over rather than interrupted');
+  assert.match(after, /Check the state they\s+are actually in/, 'and to look before it touches anything');
+  assert.match(after, /RESULT section again/, 'and to report again');
+  assert.match(script, /echo "\$mode \$\(wc -c/, 'and says where a follower should pick up');
+});
+
+test('steerJob says so when there is no job or no session to resume', async () => {
   let script = null;
   await steerJob(config, 'J1', 'anything', {
-    run: async (_c, s) => {
-      script = s;
-      return { stdout: 'already finished' };
-    },
+    run: async (_c, s) => ((script = s), { stdout: 'no such job' }),
   });
-  assert.match(script, /exit\.code.*already finished/, 'a finished job is not resurrected');
   assert.match(script, /no such job/, 'a missing directory says so');
   assert.match(script, /no session to resume/, 'a job from before session ids says so');
 });
