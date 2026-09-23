@@ -28,6 +28,14 @@ export function loadConfig(env = process.env, { needsSlack = true } = {}) {
     agentProjectId: env.AGENT_PROJECT_ID,
     agentService: env.AGENT_SERVICE ?? 'claude-code',
 
+    // Set SSH_CONFIG and the box is driven over ssh instead of `compute exec`,
+    // which caps a command at 64KB of argv and 180 seconds. Absent, as in the
+    // tests and anywhere without the one-time `compute ssh --setup`, it stays
+    // on exec. The choice is explicit rather than a fallback, because a silent
+    // fallback would hide an expired certificate as a slow day.
+    sshConfig: env.SSH_CONFIG,
+    sshAlias: env.SSH_ALIAS ?? `${env.AGENT_SERVICE ?? 'claude-code'}.insta`,
+
     // A job past this is reported as still running rather than silently left
     // going; the agent itself is never killed. 90 minutes because a thin-shell
     // job legitimately takes an hour: CI rebuild, a 400MB image pull, deploy,
