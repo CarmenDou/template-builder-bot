@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isStopRequest } from '../src/command.js';
-import { stopJob } from '../src/agent.js';
+import { stopJob, steerJob } from '../src/agent.js';
 import { handleMention, describeResult } from '../src/handler.js';
 
 const config = { allowedChannels: ['C_OK'], slackBotToken: 'xoxb-test', agentService: 'claude-code' };
@@ -87,6 +87,50 @@ test('stopJob kills the group and leaves a finished marker', async () => {
   assert.match(script, /pkill -TERM -f/, 'falls back for jobs started before pids were recorded');
   assert.match(script, /echo 143 > \S+exit\.code/, 'leaves a terminal marker so nobody waits forever');
   assert.match(script, /already finished/, 'a finished job is not killed');
+});
+
+test('steerJob restarts the agent on the same session and leaves the job open', async () => {
+  let script = null;
+  const run = async (_c, s) => {
+    script = s;
+    return { stdout: 'steered' };
+  };
+  const out = await steerJob(config, 'J1', 'stop using ttyd, it serves HTTP already', { run });
+  assert.equal(out, 'steered');
+
+  assert.match(script, /kill -TERM -"\$\(cat \S+pid\)"/, 'the in-flight step is killed');
+  assert.ok(
+    !/echo \d+ > \S+exit\.code/.test(script),
+    'writing exit.code would tell the poller the job finished and orphan the restart',
+  );
+
+  const runner = Buffer.from(
+    script.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \S+run\.sh/)[1],
+    'base64',
+  ).toString();
+  assert.match(runner, /claude --resume "\$\(cat \S+session\)"/, 'resumes the same conversation');
+  assert.match(runner, />> \S+out\.log/, 'appends, so the earlier output is still there');
+
+  const steerText = Buffer.from(
+    script.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \S+steer\.txt/)[1],
+    'base64',
+  ).toString();
+  assert.match(steerText, /stop using ttyd/, 'carries what the person said');
+  assert.match(steerText, /carry on with the same job/i, 'and the instruction to continue');
+  assert.match(steerText, /before you act/i, 'and to look at what it left behind before acting');
+});
+
+test('steerJob refuses a job that is over or was never started', async () => {
+  let script = null;
+  await steerJob(config, 'J1', 'anything', {
+    run: async (_c, s) => {
+      script = s;
+      return { stdout: 'already finished' };
+    },
+  });
+  assert.match(script, /exit\.code.*already finished/, 'a finished job is not resurrected');
+  assert.match(script, /no such job/, 'a missing directory says so');
+  assert.match(script, /no session to resume/, 'a job from before session ids says so');
 });
 
 test('a stopped job reads as stopped, not as a mysterious failure', () => {
