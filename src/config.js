@@ -22,6 +22,13 @@ export function loadConfig(env = process.env, { needsSlack = true } = {}) {
     slackBotToken: env.SLACK_BOT_TOKEN,
     allowedChannels: parseList(env.ALLOWED_CHANNELS),
 
+    // Handing a finished draft to the review bots. A channel id and two member
+    // ids, not credentials: the bot posts with its own token. Absent, the tool
+    // refuses rather than guessing where to post or who to wake.
+    slackReviewChannel: env.SLACK_REVIEW_CHANNEL,
+    slackReviewBotIds: parseList(env.SLACK_REVIEW_BOT_IDS ?? ''),
+    slackApproveBotIds: parseList(env.SLACK_CLAUDE_BOT_ID ?? ''),
+
     // How the bot reaches the agent box
     instaApiKey: env.INSTA_API_KEY,
     instaBin: env.INSTA_BIN ?? 'insta',

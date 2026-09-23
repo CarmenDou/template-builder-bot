@@ -1,5 +1,6 @@
 import { startJob, readJob, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
 import { watchJob } from './watch.js';
+import { askForReview } from './review.js';
 
 // The job-control layer, offered to a conversational agent as MCP tools.
 //
@@ -93,6 +94,23 @@ const TOOLS = [
     },
   },
   {
+    name: 'ask_for_review',
+    description:
+      "Ask the review bots to look at a template pull request, by posting one line in the review channel. Only after a person has read the draft and said to send it: this wakes real reviewers, so never do it because a job finished. Ask for 'review' first, and only once that comes back clean ask for 'approve'.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pr_url: { type: 'string', description: 'https://github.com/owner/repo/pull/123' },
+        stage: {
+          type: 'string',
+          enum: ['review', 'approve'],
+          description: "'review' asks Codex to look at it. 'approve' asks Claude to approve it, and belongs after a clean review, not instead of one.",
+        },
+      },
+      required: ['pr_url', 'stage'],
+    },
+  },
+  {
     name: 'stop_job',
     description:
       'End a job. Anything it already pushed stays pushed and nothing is reverted, so this abandons rather than undoes. Steering is almost always the better answer; stop only when the work should not continue at all.',
@@ -115,6 +133,7 @@ async function callTool(config, name, args, deps) {
     stop = stopJob,
     running = listRunningJobs,
     watch = watchJob,
+    review = askForReview,
   } = deps;
 
   // Deliberately not awaited: the job runs for tens of minutes and this call has
@@ -195,6 +214,11 @@ async function callTool(config, name, args, deps) {
       return /^steered/.test(outcome)
         ? text(`Passed it on. The job picks up from where it was, keeping what it has done.`)
         : failure(`Could not steer that job: ${outcome}`);
+    }
+
+    case 'ask_for_review': {
+      const outcome = await review(config, { prUrl: args?.pr_url, stage: args?.stage });
+      return /^Asked/.test(outcome) ? text(outcome) : failure(outcome);
     }
 
     case 'stop_job':
