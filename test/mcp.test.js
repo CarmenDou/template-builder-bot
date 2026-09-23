@@ -284,3 +284,9 @@ test('every follow_job answer ends by saying what to call next, with no sleep in
   const end = (await call('follow_job', { job_id: 'J9', offset: 42, stages: 3 }, { feed: finished })).result.content[0].text;
   assert.match(end.trim().split('\n').at(-1), /^Next: call read_job for the result/);
 });
+
+test('a quiet look says nothing, so a short wait does not turn into chatter', () => {
+  const d = TOOLS.find((t) => t.name === 'follow_job').description;
+  assert.match(d, /when it shows nothing new, say nothing and call again/);
+  assert.match(d, /about 20 seconds/);
+});

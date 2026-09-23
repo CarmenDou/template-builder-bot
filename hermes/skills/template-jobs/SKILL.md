@@ -30,7 +30,7 @@ it takes, 10 to 30 minutes, and then start following it straight away, in the sa
 ## Following, until it is done
 
 Call `follow_job` in a loop, starting with offset `0` and stages `0` and passing back the `offset`
-and `stages` each result gives you. It waits on the agent box by itself, up to about 45 seconds,
+and `stages` each result gives you. It waits on the agent box by itself, up to about 20 seconds,
 and answers early the moment a milestone lands or the job ends, so there is nothing to do between
 calls: never sleep, never poll with `read_job`.
 

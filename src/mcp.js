@@ -61,7 +61,7 @@ const TOOLS = [
   {
     name: 'follow_job',
     description:
-      "Follow a running job live. Waits up to about 45 seconds for it to do something, answering early when a milestone lands or it finishes, and returns only what it did since your last call, plus `offset` and `stages` to pass to the next call. Call it in a loop until `done` is true, with nothing in between: it does the waiting itself, so never sleep between calls. After each call tell the person in ONE plain sentence what the job did and why, never the raw lines. When `done`, call read_job for the result and report it. Ending your turn does NOT stop the job, which runs on another machine: if someone says stop, call stop_job.",
+      "Follow a running job live. Waits up to about 20 seconds for it to do something, answering early when a milestone lands or it finishes, and returns only what it did since your last call, plus `offset` and `stages` to pass to the next call. Call it in a loop until `done` is true, with nothing in between: it does the waiting itself, so never sleep between calls. When a call shows something new, tell the person in ONE plain sentence what the job did and why, never the raw lines; when it shows nothing new, say nothing and call again. When `done`, call read_job for the result and report it. Ending your turn does NOT stop the job, which runs on another machine: if someone says stop, call stop_job.",
     inputSchema: {
       type: 'object',
       properties: {
