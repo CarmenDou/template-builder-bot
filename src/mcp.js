@@ -197,7 +197,7 @@ async function callTool(config, name, args, deps) {
             done: state.done,
             exitCode: state.exitCode,
             stages: state.stages,
-            steps: (state.steps ?? []).slice(-20),
+            steps: (state.steps ?? []).slice(-30),
             result,
             logTail: (state.log ?? '').slice(-4000),
           },
