@@ -1,5 +1,5 @@
 import { startJob, readJob, jobFeed, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
-import { askForReview } from './review.js';
+import { askForReview, reviewStatus } from './review.js';
 
 // The job-control layer, offered to a conversational agent as MCP tools.
 //
@@ -91,7 +91,7 @@ const TOOLS = [
   {
     name: 'ask_for_review',
     description:
-      "Ask the review bots to look at a template pull request, by posting one line in the review channel. Only after a person has read the draft and said to send it: this wakes real reviewers, so never do it because a job finished. Ask for 'review' first, and only once that comes back clean ask for 'approve'.",
+      "Ask the review bots to look at a template pull request, by posting one line in the review channel. Only when a person has said to: this wakes real reviewers, so never do it on your own because a job finished. The usual order is 'review', then review_status to tell them what Codex found, then 'approve' when they say so. Their word is what counts, not the review's result: when they ask for approve, send it even with Critical findings open, and mention those in the same sentence.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -99,10 +99,23 @@ const TOOLS = [
         stage: {
           type: 'string',
           enum: ['review', 'approve'],
-          description: "'review' asks Codex to look at it. 'approve' asks Claude to approve it, and belongs after a clean review, not instead of one.",
+          description: "'review' asks Codex to look at it. 'approve' asks Claude to approve it, whenever the person says so.",
         },
       },
       required: ['pr_url', 'stage'],
+    },
+  },
+  {
+    name: 'review_status',
+    description:
+      "Where a template PR stands with the review bots: the latest Codex review's verdict, how many Critical findings and suggestions it has, whether it read the current head or an older commit, and whether the PR is approved. After ask_for_review stage review, pass the `asked at` time from its reply as `after`: it waits up to two minutes for a review newer than that, and if none has come yet, call it again with the same `after`. Clean means no Critical findings on the current head. This is for telling the person where things stand in a sentence or two, not a gate: approve is sent when they say so, whatever this shows, and never on your own.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pr_url: { type: 'string', description: 'https://github.com/owner/repo/pull/123' },
+        after: { type: 'string', description: "The `asked at` time from ask_for_review's reply, to wait for the review it asked for." },
+      },
+      required: ['pr_url'],
     },
   },
   {
@@ -129,6 +142,7 @@ async function callTool(config, name, args, deps) {
     stop = stopJob,
     running = listRunningJobs,
     review = askForReview,
+    reviews = reviewStatus,
   } = deps;
 
   // The job never posts anywhere itself. Whoever started it follows it and does
@@ -225,6 +239,34 @@ async function callTool(config, name, args, deps) {
     case 'ask_for_review': {
       const outcome = await review(config, { prUrl: args?.pr_url, stage: args?.stage });
       return /^Asked/.test(outcome) ? text(outcome) : failure(outcome);
+    }
+
+    case 'review_status': {
+      let r;
+      try {
+        r = await reviews(config, { prUrl: args?.pr_url, after: args?.after });
+      } catch (error) {
+        return failure(`Could not read that PR: ${error.message.slice(0, 160)}`);
+      }
+      if (!r.reviewed || r.waiting) {
+        return text(
+          args?.after
+            ? `No Codex review since ${args.after} yet. Call review_status again with the same after.`
+            : 'No Codex review on this PR yet.',
+        );
+      }
+      const counts = [
+        `Critical ${r.critical ?? 'unknown'}`,
+        `suggestions ${r.suggestions ?? 'unknown'}`,
+      ].join(', ');
+      return text(
+        [
+          `Codex review (${r.state}, ${r.at}): ${r.verdict ?? 'no verdict line'}`,
+          `${counts}; ${r.onHead ? 'on the current head' : 'on an OLDER commit, so whatever was pushed since has not been reviewed'}`,
+          `clean: ${r.clean ? 'yes' : 'no'}`,
+          `approved: ${r.approved ? 'yes' : 'no'}`,
+        ].join('\n'),
+      );
     }
 
     case 'stop_job':
