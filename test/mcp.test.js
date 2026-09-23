@@ -21,6 +21,7 @@ test('every tool says what it is for, and none of them can delete', () => {
   assert.deepEqual(names, [
     'ask_for_review',
     'continue_template_pr',
+    'follow_job',
     'list_running_jobs',
     'read_job',
     'start_template_job',
@@ -28,7 +29,7 @@ test('every tool says what it is for, and none of them can delete', () => {
     'stop_job',
   ]);
   // The box holds a platform key for the whole org. Nothing here may reach it:
-  // a caller can only do these seven things, whatever it is asked to do.
+  // a caller can only do these eight things, whatever it is asked to do.
   const surface = JSON.stringify(TOOLS);
   assert.ok(!/delete|remove|destroy/i.test(surface), 'no destructive verb is offered');
   for (const t of TOOLS) assert.ok(t.description.length > 60, `${t.name} explains itself`);
@@ -170,7 +171,49 @@ test('starting a job says how to follow it', async () => {
     deps,
   );
   const said = res.result.content[0].text;
-  assert.match(said, /follow J42 0 0/);
-  assert.doesNotMatch(said, /"/, 'nothing for the caller to quote');
+  assert.match(said, /follow_job\(job_id: "J42", offset: 0, stages: 0\)/);
+  assert.doesNotMatch(said, /sleep|\bcc\b|ssh/, 'no shell for the caller to assemble');
   assert.match(said, /says nothing on its own/);
+});
+
+const call = (name, args, deps) =>
+  handleRpc({}, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, deps);
+
+test('follow_job hands back the offsets for the next call, and says when it is done', async () => {
+  const feed = async (_c, id, o) => ({
+    activity: ['stage: build: green', 'said: deploying now'],
+    offset: o.offset + 100,
+    stages: o.stages + 1,
+    done: false,
+    exitCode: null,
+  });
+  const res = await call('follow_job', { job_id: 'J1', offset: 5, stages: 2 }, { feed });
+  const said = res.result.content[0].text;
+  assert.match(said, /stage: build: green/);
+  assert.match(said, /offset: 105/);
+  assert.match(said, /stages: 3/);
+  assert.match(said, /done: false/);
+});
+
+test('follow_job with nothing new says so rather than returning an empty page', async () => {
+  const feed = async () => ({ activity: [], offset: 7, stages: 1, done: false, exitCode: null });
+  const said = (await call('follow_job', { job_id: 'J1' }, { feed })).result.content[0].text;
+  assert.match(said, /nothing new/);
+});
+
+test('a dropped channel tells the follower to go on, not that the job failed', async () => {
+  const feed = async () => {
+    throw new Error('exec channel dropped');
+  };
+  const res = await call('follow_job', { job_id: 'J1', offset: 9, stages: 3 }, { feed });
+  assert.ok(!res.result.isError);
+  assert.match(res.result.content[0].text, /Call follow_job again with the same offset and stages/);
+});
+
+test('follow_job is described so that nobody needs a skill to use it', () => {
+  const d = TOOLS.find((t) => t.name === 'follow_job').description;
+  assert.match(d, /never sleep between calls/);
+  assert.match(d, /ONE plain sentence/);
+  assert.match(d, /Ending your turn does NOT stop the job/);
+  assert.match(d, /stop_job/);
 });

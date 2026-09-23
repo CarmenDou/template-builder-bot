@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newJobId, buildTask, parseResult, startJob, readJob, stageInstructions } from '../src/agent.js';
+import { newJobId, buildTask, parseResult, startJob, readJob, jobFeed, stageInstructions } from '../src/agent.js';
 
 const config = {
   instaBin: 'insta',
@@ -285,4 +285,36 @@ test('every start puts the current job-feed on the box, where the follower reads
   const body = Buffer.from(m[1], 'base64').toString();
   assert.match(body, /next: \$\{nextOffset\}/, 'and it is the feed that hands back its own offsets');
   assert.match(script, /chmod 755 \/data\/home\/bin\/job-feed/);
+});
+
+test('jobFeed asks the box to wait, and reads its offsets back', async () => {
+  let script = '';
+  const run = async (_c, s) => ((script = s), { stdout: 'stage: pr: https://x/1\nsaid: waiting on CI\nnext: 4096 3 status: running\n' });
+  const f = await jobFeed({}, 'J1', { offset: 10, stages: 2 }, { run });
+  assert.equal(script, '/data/home/bin/job-feed J1 10 2 45');
+  assert.deepEqual(f.activity, ['stage: pr: https://x/1', 'said: waiting on CI']);
+  assert.equal(f.offset, 4096);
+  assert.equal(f.stages, 3);
+  assert.equal(f.done, false);
+});
+
+test('jobFeed reads a finished job and its exit code', async () => {
+  const run = async () => ({ stdout: 'next: 9 8 status: done exit=0\n' });
+  const f = await jobFeed({}, 'J1', {}, { run });
+  assert.equal(f.done, true);
+  assert.equal(f.exitCode, 0);
+  assert.deepEqual(f.activity, []);
+});
+
+test('jobFeed never puts anything but a job id and numbers into the command', async () => {
+  const run = async () => assert.fail('must not run');
+  await assert.rejects(() => jobFeed({}, 'J1; rm -rf /', {}, { run }), /not a job id/);
+  let script = '';
+  await jobFeed({}, 'J1', { offset: '3; ls', stages: -4 }, { run: async (_c, s) => ((script = s), { stdout: 'next: 0 0 status: running' }) });
+  assert.equal(script, '/data/home/bin/job-feed J1 0 0 45');
+});
+
+test('an answer that is not job-feed output is an error, not a guess', async () => {
+  const run = async () => ({ stdout: 'bash: job-feed: No such file or directory' });
+  await assert.rejects(() => jobFeed({}, 'J1', {}, { run }), /something else/);
 });
