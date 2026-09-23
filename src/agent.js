@@ -21,6 +21,9 @@ const lines = (block) =>
 
 // Read once at module load: it ships with this repo and lands in every job dir.
 const STEPS_JS = readFileSync(new URL('./box/steps.js', import.meta.url), 'utf8');
+// How whoever started a job follows it. Rewritten on every start rather than
+// installed once, so the box always has the version this code expects.
+const JOB_FEED_JS = readFileSync(new URL('./box/job-feed.js', import.meta.url), 'utf8');
 
 // Tools the agent is allowed to use. Deliberately an allowlist rather than
 // bypassing permission checks: this box holds a GitHub token that can push to
@@ -361,12 +364,15 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
   ).toString('base64');
 
   const stepsB64 = Buffer.from(STEPS_JS, 'utf8').toString('base64');
+  const feedB64 = Buffer.from(JOB_FEED_JS, 'utf8').toString('base64');
 
   const script = [
     'set -e',
     `mkdir -p ${dir}`,
     `printf '%s' '${taskB64}' | base64 -d > ${dir}/task.txt`,
     `printf '%s' '${stepsB64}' | base64 -d > ${dir}/steps.js`,
+    'mkdir -p /data/home/bin',
+    `printf '%s' '${feedB64}' | base64 -d > /data/home/bin/job-feed && chmod 755 /data/home/bin/job-feed`,
     `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
     `printf '%s' '${mcpB64}' | base64 -d > ${dir}/mcp.json`,
     `printf '%s' '${ticket}' | base64 -d > ${dir}/slack.json`,

@@ -1,5 +1,4 @@
 import { startJob, readJob, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
-import { watchJob } from './watch.js';
 import { askForReview } from './review.js';
 
 // The job-control layer, offered to a conversational agent as MCP tools.
@@ -17,7 +16,7 @@ const TOOLS = [
   {
     name: 'start_template_job',
     description:
-      'Turn a GitHub repository into an InstaCloud template: triage, manifest, a DRAFT pull request, one real deploy, and verification. Takes 10 to 30 minutes and reports through read_job. REFUSES if a job is already running on that repository, because two agents on one branch overwrite each other; steer_job that one instead.',
+      'Turn a GitHub repository into an InstaCloud template: triage, manifest, a DRAFT pull request, one real deploy, and verification. Takes 10 to 30 minutes and says nothing on its own: whoever starts it follows it with job-feed, or read_job. REFUSES if a job is already running on that repository, because two agents on one branch overwrite each other; steer_job that one instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -25,15 +24,6 @@ const TOOLS = [
         instructions: {
           type: 'string',
           description: 'Anything the requester asked for beyond the default, in their own words.',
-        },
-        slack_channel: {
-          type: 'string',
-          description:
-            'The channel id of the conversation you are in. Pass it and the job reports its own progress there while it works, so nobody has to ask. Leave it out and the job is silent until someone calls read_job.',
-        },
-        slack_thread_ts: {
-          type: 'string',
-          description: 'The thread timestamp to report into, so the progress lands under the request rather than in the channel.',
         },
       },
       required: ['repo_url'],
@@ -48,15 +38,6 @@ const TOOLS = [
       properties: {
         pr_number: { type: 'number', description: 'The number on InsForge/instacloud-oss.' },
         instructions: { type: 'string', description: 'What the reviewer wants changed.' },
-        slack_channel: {
-          type: 'string',
-          description:
-            'The channel id of the conversation you are in. Pass it and the job reports its own progress there while it works, so nobody has to ask. Leave it out and the job is silent until someone calls read_job.',
-        },
-        slack_thread_ts: {
-          type: 'string',
-          description: 'The thread timestamp to report into, so the progress lands under the request rather than in the channel.',
-        },
       },
       required: ['pr_number', 'instructions'],
     },
@@ -132,20 +113,13 @@ async function callTool(config, name, args, deps) {
     steer = steerJob,
     stop = stopJob,
     running = listRunningJobs,
-    watch = watchJob,
     review = askForReview,
   } = deps;
 
-  // Deliberately not awaited: the job runs for tens of minutes and this call has
-  // to return now. Deliberately not optional either, when the caller said where
-  // it is: a job that only speaks when questioned is the thing being fixed here.
-  const reportInto = (jobId, url) => {
-    const channel = args?.slack_channel;
-    const threadTs = args?.slack_thread_ts;
-    if (!channel || !config.slackBotToken) return ' Follow it with read_job.';
-    watch(config, { jobId, url, channel, threadTs }).catch(() => {});
-    return ' It will post its own progress in this thread; read_job still works if you want detail.';
-  };
+  // The job never posts anywhere itself. Whoever started it follows it and does
+  // the talking, so the conversation has one voice that can also hear the reply.
+  const follow = (jobId) =>
+    ` It says nothing on its own. Follow it with: /data/.hermes/bin/follow ${jobId} 0 0`;
 
   // The one guard that cannot be a rule the caller remembers: under pressure,
   // with three people talking at once, remembering is exactly what fails.
@@ -163,9 +137,8 @@ async function callTool(config, name, args, deps) {
           `Job ${busy.jobId} is already templating ${url}. Starting a second one would have both push to the same branch. Use steer_job on ${busy.jobId}.`,
         );
       }
-      const slack = { channel: args?.slack_channel, threadTs: args?.slack_thread_ts };
-      const { jobId } = await start(config, { url, extra: args?.instructions, slack });
-      return text(`Started job ${jobId} on ${url}.${reportInto(jobId, url)}`);
+      const { jobId } = await start(config, { url, extra: args?.instructions, slack: {} });
+      return text(`Started job ${jobId} on ${url}.${follow(jobId)}`);
     }
 
     case 'continue_template_pr': {
@@ -177,9 +150,8 @@ async function callTool(config, name, args, deps) {
           `Job ${busy.jobId} is already working on PR #${pr}. Use steer_job on ${busy.jobId}.`,
         );
       }
-      const slack = { channel: args?.slack_channel, threadTs: args?.slack_thread_ts };
-      const { jobId } = await start(config, { pr, extra: args?.instructions, slack });
-      return text(`Started job ${jobId} on PR #${pr}.${reportInto(jobId, `PR #${pr}`)}`);
+      const { jobId } = await start(config, { pr, extra: args?.instructions, slack: {} });
+      return text(`Started job ${jobId} on PR #${pr}.${follow(jobId)}`);
     }
 
     case 'list_running_jobs': {
