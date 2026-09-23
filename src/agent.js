@@ -100,11 +100,22 @@ Finish your reply with a section headed RESULT containing, one per line:
   project: <project id, or none>
   service: <public URL, or none>
   pr: <PR url, or none>
+  created: <something you made that a human needs in order to carry on>
   ask: <one thing a human has to settle>
 
-Repeat the ask line once per thing, or leave it out entirely if there is nothing. One sentence each,
-naming the decision rather than arguing it: the reasoning belongs in the PR body, and a reader who
-needs it will open the PR. Five of them run together in one paragraph is a wall nobody reads.${hint}${stages}`;
+Repeat either line once per thing, or leave it out entirely if there is nothing. One sentence each.
+For \`ask\`, name the decision rather than arguing it: the reasoning belongs in the PR body, and a
+reader who needs it will open the PR. Five of them run together in one paragraph is a wall nobody
+reads.
+
+**\`created\` is where the real values go.** This block is read out in a private Slack channel, not
+in the PR, so unlike the PR body it carries the account you signed up, the password you actually
+typed, and the records you seeded. Whoever picks this up has to sign in as you did, and the platform
+cannot help them: template variable values are write-only. Give them everything they need.
+
+Only what you BROUGHT INTO EXISTENCE. The credentials you were HANDED to do the job with, the GitHub
+token and the platform key on this box, are never reported anywhere, in any channel, for any
+reason.${hint}${stages}`;
 }
 
 export function buildFollowupTask({ pr, extra, dir }) {
@@ -127,10 +138,15 @@ Finish your reply with a section headed RESULT containing, one per line:
   project: <project id you verified in, or none>
   service: <public URL, or none>
   pr: https://github.com/InsForge/instacloud-oss/pull/${pr}
+  created: <something you made that a human needs in order to carry on>
   ask: <one thing a human has to settle>
 
-Repeat the ask line once per thing, or leave it out entirely if there is nothing. One sentence each,
-naming the decision rather than arguing it: the reasoning belongs in the PR body.${stages}`;
+Repeat either line once per thing, or leave it out entirely if there is nothing. One sentence each.
+
+\`created\` is read out in a private Slack channel rather than in the PR, so it carries the real
+values: the account you signed up, the password you typed, the records you seeded. Only what you
+brought into existence, though. The GitHub token and platform key you were handed are never
+reported anywhere.${stages}`;
 }
 
 // argv, never a shell string, so a repo name can never become a command.
@@ -274,12 +290,14 @@ export function parseResult(log) {
     const value = m?.[1]?.trim();
     return value && value.toLowerCase() !== 'none' ? value : null;
   };
-  // One `ask:` line per thing to settle. Five of them on one line is a wall
-  // nobody reads, so the block carries them separately all the way to Slack.
-  const asks = [...block.matchAll(/^\s*ask:\s*(.+)$/gim)]
-    .map((m) => m[1].trim())
-    .filter((a) => a && a.toLowerCase() !== 'none');
+  // One line per thing. Five of them on one line is a wall nobody reads, so the
+  // block carries them separately all the way to Slack.
+  const lines = (name) =>
+    [...block.matchAll(new RegExp(`^\\s*${name}:\\s*(.+)$`, 'gim'))]
+      .map((m) => m[1].trim())
+      .filter((v) => v && v.toLowerCase() !== 'none');
 
+  const asks = lines('ask');
   const legacy = field('asks');
   if (!asks.length && legacy) asks.push(legacy);
 
@@ -288,6 +306,7 @@ export function parseResult(log) {
     project: field('project'),
     service: field('service'),
     pr: field('pr'),
+    created: lines('created'),
     asks,
   };
 }
