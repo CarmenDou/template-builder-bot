@@ -261,6 +261,11 @@ export function boxCommand(config, script) {
         'BatchMode=yes',
         '-o',
         'ConnectTimeout=25',
+        // The config the setup writes puts the control socket under `~`, which
+        // for a service account is a root-disk home that a restart wipes. The
+        // multiplexing is not worth a dependency on a directory that vanishes.
+        '-o',
+        'ControlMaster=no',
         config.sshAlias,
         script,
       ],

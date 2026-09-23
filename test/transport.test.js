@@ -28,6 +28,8 @@ test('SSH_CONFIG switches the transport, and names the config file explicitly', 
     'BatchMode=yes',
     '-o',
     'ConnectTimeout=25',
+    '-o',
+    'ControlMaster=no',
     'claude-code.insta',
     'echo hi',
   ]);
