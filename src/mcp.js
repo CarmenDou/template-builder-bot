@@ -212,8 +212,14 @@ async function callTool(config, name, args, deps) {
       try {
         const f = await feed(config, String(args?.job_id ?? ''), { offset: args?.offset, stages: args?.stages });
         const body = f.activity.length > 0 ? f.activity.join('\n') : '(nothing new since the last call)';
+        // The last thing read before deciding what to do next, so it is where
+        // the loop is spelled out. A follower that saw an early answer used to
+        // add a sleep of its own, which only delays what the person hears.
+        const next = f.done
+          ? 'Next: call read_job for the result, and report it.'
+          : `Next: call follow_job(job_id: "${args?.job_id}", offset: ${f.offset}, stages: ${f.stages}) straight away. It waits on the box by itself and answers early only when something happened; sleeping first only delays what the person hears.`;
         return text(
-          `${body}\n\noffset: ${f.offset}\nstages: ${f.stages}\ndone: ${f.done}${f.done ? ` (exit ${f.exitCode})` : ''}`,
+          `${body}\n\noffset: ${f.offset}\nstages: ${f.stages}\ndone: ${f.done}${f.done ? ` (exit ${f.exitCode})` : ''}\n${next}`,
         );
       } catch (error) {
         // A dropped channel is ordinary on a busy box. Say so, and say to go on.
