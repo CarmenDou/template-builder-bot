@@ -92,6 +92,26 @@ stage file saying what you changed.
 Nothing else about the job changes. Finish the way you were going to, with the RESULT section.`;
 }
 
+/**
+ * What the agent is handed when someone comes back to a job it already finished.
+ *
+ * Not the steering prompt: nothing was interrupted, time has passed, and a person
+ * may have touched what it left behind. It has to look before it acts, and it has
+ * to report again, because a watcher treats the new RESULT as the answer.
+ */
+export function buildResumePrompt(message) {
+  return `The job you did has finished, and the person who asked for it is back with this:
+
+${message}
+
+Everything you did is still here: this job directory, your clones, the project you deployed into,
+the credentials you created and the PR. Do what they ask, on those same things. Check the state they
+are actually in before you change anything, since time has passed and someone may have touched them.
+
+Append a line to your stage file for each thing you do, as before, so they can follow along. Finish
+with a RESULT section again: repeat last time's fields and change only the ones that changed.`;
+}
+
 // Identical for a fresh start and for a resume; only the claude invocation
 // differs. Both end by writing the exit.code the poller waits on.
 function runnerScript(dir, claudeLine) {
@@ -387,20 +407,31 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
 }
 
 /**
- * Hands a running agent something a human just said, and lets it carry on.
+ * Hands a job's own agent something a human just said, whether or not the job is
+ * still running, and lets it carry on.
  *
- * The agent is killed and resumed rather than interrupted in place: `claude -p`
- * has no channel to speak into once it is running. That costs the step in
+ * A running agent is killed and resumed rather than interrupted in place: `claude
+ * -p` has no channel to speak into once it is running. That costs the step in
  * flight and nothing else, because the session file is written turn by turn, so
  * `--resume` picks up everything already done.
  *
- * Deliberately does NOT write exit.code. The job has not finished, and the
- * poller watching it must stay attached across the restart.
+ * A finished one is resumed in the same session. It is the only thing with the
+ * browser, the platform login for the project it deployed into and the
+ * credentials it created, so follow-up work on what it built belongs to it rather
+ * than to whoever is relaying. Its old exit.code is removed so a follower sees
+ * the new stretch as running, not as the end of the old one.
+ *
+ * Never writes exit.code itself: the job has not finished, and whoever is
+ * watching must stay attached across the restart.
+ *
+ * Answers `steered <offset> <stages>` or `resumed <offset> <stages>`, where the
+ * numbers are where a follower should pick up from.
  */
 export async function steerJob(config, jobId, message, deps = {}) {
   const { run = execInBox } = deps;
   const dir = `${JOBS_ROOT}/${jobId}`;
-  const steerB64 = Buffer.from(buildSteerPrompt(message), 'utf8').toString('base64');
+  const duringB64 = Buffer.from(buildSteerPrompt(message), 'utf8').toString('base64');
+  const afterB64 = Buffer.from(buildResumePrompt(message), 'utf8').toString('base64');
 
   // `$(cat session)` rather than a baked id: the file is the record, and it is
   // right even for a job this process did not start.
@@ -412,15 +443,21 @@ export async function steerJob(config, jobId, message, deps = {}) {
 
   const script = [
     `[ -d ${dir} ] || { echo "no such job"; exit 0; }`,
-    `[ -f ${dir}/exit.code ] && { echo "already finished"; exit 0; }`,
     `[ -f ${dir}/session ] || { echo "no session to resume"; exit 0; }`,
-    `if [ -f ${dir}/pid ]; then kill -TERM -"$(cat ${dir}/pid)" 2>/dev/null || kill -TERM "$(cat ${dir}/pid)" 2>/dev/null; fi`,
-    `pkill -TERM -f "${dir}/run.sh" 2>/dev/null`,
-    'sleep 2',
-    `printf '%s' '${steerB64}' | base64 -d > ${dir}/steer.txt`,
+    `if [ -f ${dir}/exit.code ]; then`,
+    `  mode=resumed`,
+    `  printf '%s' '${afterB64}' | base64 -d > ${dir}/steer.txt`,
+    `  rm -f ${dir}/exit.code ${dir}/claude.exit`,
+    `else`,
+    `  mode=steered`,
+    `  if [ -f ${dir}/pid ]; then kill -TERM -"$(cat ${dir}/pid)" 2>/dev/null || kill -TERM "$(cat ${dir}/pid)" 2>/dev/null; fi`,
+    `  pkill -TERM -f "${dir}/run.sh" 2>/dev/null`,
+    '  sleep 2',
+    `  printf '%s' '${duringB64}' | base64 -d > ${dir}/steer.txt`,
+    `fi`,
     `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
     `nohup setsid sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null &`,
-    'echo steered',
+    `echo "$mode $(wc -c < ${dir}/out.jsonl 2>/dev/null || echo 0) $(grep -c . ${dir}/stage.txt 2>/dev/null || echo 0)"`,
   ].join('\n');
 
   const { stdout } = await run(config, script, { timeoutMs: 120000 });

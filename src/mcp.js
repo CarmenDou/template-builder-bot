@@ -51,7 +51,7 @@ const TOOLS = [
   {
     name: 'read_job',
     description:
-      'What a job has done so far: whether it finished, the progress lines it wrote, the tail of its output, and its result once there is one. Use this to answer questions about a running job rather than interrupting it. To watch one live, use follow_job.',
+      'What a job has done so far: whether it finished, the progress lines it wrote, the tail of its output, and its result once there is one. Use this to answer questions about a job rather than interrupting it. To watch one live, use follow_job; to have something done to what it built, use steer_job.',
     inputSchema: {
       type: 'object',
       properties: { job_id: { type: 'string' } },
@@ -75,7 +75,7 @@ const TOOLS = [
   {
     name: 'steer_job',
     description:
-      'Say something to a job that is already running and let it carry on. Use it when a person changes the plan mid-flight. The agent is interrupted and resumed with your message, so it keeps everything it has done and loses only the step in flight. A question costs the same as an instruction, so prefer read_job when you only want to know where it is.',
+      "Pass what a person said to a job's own agent, the Claude Code that did the work. It alone has the browser, the platform login for the project it deployed into, the credentials it created and the whole history, so use this for a change of plan while a job runs AND for anything afterwards about what a job built: its deployment, the data it made, its accounts, its PR. Do not try to do those yourself from here, where none of that is logged in or reachable. A running job is interrupted and resumed with the message and keeps what it has done; a finished one is picked back up in the same session. Pass the person's own words, then follow it with follow_job from the offset and stages in the reply. A question costs a turn too, so answer from read_job when that is enough.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -210,10 +210,16 @@ async function callTool(config, name, args, deps) {
     case 'steer_job': {
       const message = String(args?.message ?? '').trim();
       if (!message) return failure('steer_job needs the message to pass on.');
-      const outcome = await steer(config, String(args?.job_id ?? ''), message);
-      return /^steered/.test(outcome)
-        ? text(`Passed it on. The job picks up from where it was, keeping what it has done.`)
-        : failure(`Could not steer that job: ${outcome}`);
+      const jobId = String(args?.job_id ?? '');
+      const outcome = await steer(config, jobId, message);
+      const m = outcome.match(/^(steered|resumed) (\d+) (\d+)$/);
+      if (!m) return failure(`Could not pass that on: ${outcome}`);
+      const [, mode, offset, stages] = m;
+      const how =
+        mode === 'resumed'
+          ? 'The job had finished, so its agent has been picked back up in the same session with that.'
+          : 'Passed it on. The job picks up from where it was, keeping what it has done.';
+      return text(`${how} Follow it with follow_job(job_id: "${jobId}", offset: ${offset}, stages: ${stages}).`);
     }
 
     case 'ask_for_review': {

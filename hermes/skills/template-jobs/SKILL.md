@@ -62,6 +62,14 @@ Their message reaches you in the middle of the loop. Answer it, then carry on fo
   the job and do not stop following it.
 - A change of direction: pass it on with `steer_job`, in their words rather than your summary, say
   in a sentence that you have, and carry on following. The agent keeps everything it has done.
+
+## After a job has finished
+
+Anything about what a job built, its deployment, the data it created while verifying, the accounts
+it set up, its PR, goes back to the job's own agent through `steer_job`, which picks a finished job
+up in the same session. That agent has the browser, the platform login for the project and the
+credentials it created; you have none of them here, so do not try it yourself with your terminal
+or a browser. Then follow it with `follow_job` from the offset and stages the reply gives you.
 - "Stop": call `stop_job`, say what was already pushed stays pushed, and stop following.
 
 **Ending your turn does not stop the job.** It runs on another machine and carries on whether

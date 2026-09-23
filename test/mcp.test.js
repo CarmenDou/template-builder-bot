@@ -117,17 +117,27 @@ test('steer passes the message on and says plainly when it could not', async () 
   const ok = await rpc(
     'tools/call',
     { name: 'steer_job', arguments: { job_id: 'J1', message: 'drop ttyd' } },
-    { steer: async (_c, id, m) => (id === 'J1' && m === 'drop ttyd' ? 'steered' : 'wrong args') },
+    { steer: async (_c, id, m) => (id === 'J1' && m === 'drop ttyd' ? 'steered 120 3' : 'wrong args') },
   );
   assert.ok(!ok.result.isError);
+  assert.match(ok.result.content[0].text, /follow_job\(job_id: "J1", offset: 120, stages: 3\)/, 'and where to follow from');
+
+  const back = await rpc(
+    'tools/call',
+    { name: 'steer_job', arguments: { job_id: 'J1', message: 'delete the seed data' } },
+    { steer: async () => 'resumed 900 8' },
+  );
+  assert.ok(!back.result.isError, 'a finished job is not a refusal any more');
+  assert.match(back.result.content[0].text, /had finished/);
+  assert.match(back.result.content[0].text, /offset: 900, stages: 8/);
 
   const gone = await rpc(
     'tools/call',
     { name: 'steer_job', arguments: { job_id: 'J1', message: 'drop ttyd' } },
-    { steer: async () => 'already finished' },
+    { steer: async () => 'no such job' },
   );
   assert.equal(gone.result.isError, true);
-  assert.match(gone.result.content[0].text, /already finished/);
+  assert.match(gone.result.content[0].text, /no such job/);
 });
 
 test('a tool that throws comes back as a readable failure, not a dead connection', async () => {
@@ -216,4 +226,11 @@ test('follow_job is described so that nobody needs a skill to use it', () => {
   assert.match(d, /ONE plain sentence/);
   assert.match(d, /Ending your turn does NOT stop the job/);
   assert.match(d, /stop_job/);
+});
+
+test('steer_job is described as the way to reach what a job built', () => {
+  const d = TOOLS.find((t) => t.name === 'steer_job').description;
+  assert.match(d, /AND for anything afterwards about what a job built/);
+  assert.match(d, /Do not try to do those yourself from here/);
+  assert.match(d, /follow it with follow_job/);
 });
