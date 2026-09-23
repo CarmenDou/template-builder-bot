@@ -4,6 +4,7 @@ import { loadConfig } from './config.js';
 import { handleMention, followJob } from './handler.js';
 import { ensureLogin, listUnreportedJobs, markReported } from './agent.js';
 import { postMessage, verifySlackSignature } from './slack.js';
+import { handleRpc } from './mcp.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const DEDUPE_TTL_MS = 60 * 60 * 1000;
@@ -75,11 +76,54 @@ export async function resumeOrphanedJobs(config, deps = {}) {
 }
 
 export function createServer(config, deps = {}) {
-  const { post = postMessage, mention = handleMention, follow = followJob, mark = markReported } = deps;
+  const { post = postMessage, mention = handleMention, follow = followJob, mark = markReported, rpc = handleRpc } = deps;
 
   return http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
+      return;
+    }
+
+    // The job tools, for a conversational agent that reaches us over the network.
+    // Fails closed: with no token configured the endpoint does not exist at all,
+    // because an open one would let anyone who finds this URL start an agent
+    // holding a GitHub token.
+    if (req.url.startsWith('/mcp')) {
+      if (!config.mcpToken) {
+        res.writeHead(404).end();
+        return;
+      }
+      if (req.headers.authorization !== `Bearer ${config.mcpToken}`) {
+        log({ status: 'mcp_unauthorized' });
+        res.writeHead(401).end();
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405).end();
+        return;
+      }
+
+      let body;
+      try {
+        body = JSON.parse(await readRawBody(req));
+      } catch {
+        res.writeHead(400).end();
+        return;
+      }
+
+      // A batch is an array; each member answers independently and notifications
+      // drop out, so an all-notification batch correctly returns nothing at all.
+      const messages = Array.isArray(body) ? body : [body];
+      const replies = (await Promise.all(messages.map((m) => rpc(config, m)))).filter(Boolean);
+      log({ status: 'mcp', methods: messages.map((m) => m?.method).join(','), replies: replies.length });
+
+      if (replies.length === 0) {
+        res.writeHead(202).end();
+        return;
+      }
+      res
+        .writeHead(200, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify(Array.isArray(body) ? replies : replies[0]));
       return;
     }
 

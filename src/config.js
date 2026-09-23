@@ -37,6 +37,11 @@ export function loadConfig(env = process.env) {
     jobTimeoutMs: Number(env.JOB_TIMEOUT_MS ?? 90 * 60 * 1000),
     pollIntervalMs: Number(env.POLL_INTERVAL_MS ?? 20 * 1000),
 
+    // Unset means the /mcp endpoint does not exist. Not required, because the
+    // bot works without it, but the endpoint can start an agent that pushes to
+    // instacloud-oss, so it is never open.
+    mcpToken: env.MCP_TOKEN ?? '',
+
     port: Number(env.PORT ?? 8080),
   };
 }

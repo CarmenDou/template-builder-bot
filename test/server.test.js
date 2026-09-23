@@ -149,3 +149,93 @@ test('non-mention events are ignored', async () => {
     await new Promise((r) => setTimeout(r, 30));
   });
 });
+
+// --- the /mcp endpoint -------------------------------------------------------
+
+async function withMcpServer(tokenConfig, deps, fn) {
+  const server = createServer({ ...config, ...tokenConfig }, deps);
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    return await fn(base);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+}
+
+const mcp = (base, body, headers = {}) =>
+  fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+
+test('with no token configured the endpoint does not exist', async () => {
+  // Fail closed. An open /mcp lets anyone who finds this URL start an agent that
+  // holds a GitHub token, so missing config must not mean missing lock.
+  await withMcpServer({ mcpToken: '' }, {}, async (base) => {
+    const res = await mcp(base, { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    assert.equal(res.status, 404);
+  });
+});
+
+test('a wrong or missing bearer token is refused before dispatch', async () => {
+  const deps = { rpc: async () => assert.fail('must not dispatch') };
+  await withMcpServer({ mcpToken: 'sekret' }, deps, async (base) => {
+    assert.equal((await mcp(base, { jsonrpc: '2.0', id: 1, method: 'tools/list' })).status, 401);
+    const wrong = await mcp(
+      base,
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { authorization: 'Bearer nope' },
+    );
+    assert.equal(wrong.status, 401);
+  });
+});
+
+test('an authorised call is dispatched and answered', async () => {
+  await withMcpServer(
+    { mcpToken: 'sekret' },
+    { rpc: async (_c, m) => ({ jsonrpc: '2.0', id: m.id, result: { tools: [] } }) },
+    async (base) => {
+      const res = await mcp(
+        base,
+        { jsonrpc: '2.0', id: 7, method: 'tools/list' },
+        { authorization: 'Bearer sekret' },
+      );
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { jsonrpc: '2.0', id: 7, result: { tools: [] } });
+    },
+  );
+});
+
+test('a notification is accepted with no body', async () => {
+  await withMcpServer({ mcpToken: 'sekret' }, { rpc: async () => null }, async (base) => {
+    const res = await mcp(
+      base,
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { authorization: 'Bearer sekret' },
+    );
+    assert.equal(res.status, 202, 'a body here would be a protocol error');
+  });
+});
+
+test('a batch comes back as a batch, with notifications dropped', async () => {
+  await withMcpServer(
+    { mcpToken: 'sekret' },
+    { rpc: async (_c, m) => (m.id ? { jsonrpc: '2.0', id: m.id, result: {} } : null) },
+    async (base) => {
+      const res = await mcp(
+        base,
+        [
+          { jsonrpc: '2.0', id: 1, method: 'ping' },
+          { jsonrpc: '2.0', method: 'notifications/initialized' },
+          { jsonrpc: '2.0', id: 2, method: 'ping' },
+        ],
+        { authorization: 'Bearer sekret' },
+      );
+      const body = await res.json();
+      assert.ok(Array.isArray(body));
+      assert.deepEqual(body.map((r) => r.id), [1, 2]);
+    },
+  );
+});
