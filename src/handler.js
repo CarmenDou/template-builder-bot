@@ -1,5 +1,5 @@
-import { parseCommand, findPrInThread, findJobIdInThread, renderThread, isStopRequest } from './command.js';
-import { startJob, readJob, parseResult, listRunningJobs, stopJob } from './agent.js';
+import { parseCommand, findPrInThread, findJobIdInThread, renderThread, isStopRequest, stripMention } from './command.js';
+import { startJob, readJob, parseResult, listRunningJobs, stopJob, steerJob } from './agent.js';
 import { fetchThread } from './slack.js';
 
 const HELP = [
@@ -80,13 +80,30 @@ export async function handleMention({ event, config, deps = {} }) {
     read = readJob,
     running = listRunningJobs,
     stop = stopJob,
+    steer = steerJob,
   } = deps;
 
   // Two agents on one PR both push to the same branch and both rewrite the body,
-  // so the slower one silently overwrites the better one. Refuse instead.
+  // so the slower one silently overwrites the better one. Never start a second.
   const alreadyOn = async (subject) => {
     const jobs = await running(config).catch(() => []);
     return jobs.find((j) => j.url === subject) ?? null;
+  };
+
+  // Which is not a reason to ignore the person. The one agent already on it gets
+  // what they said and carries on, so the guard holds and the thread still works.
+  const handOver = async (busy, said) => {
+    const outcome = await steer(config, busy.jobId, said).catch((error) => `failed: ${error.message}`);
+    if (!/^steered/.test(outcome)) {
+      return {
+        reply: `I could not pass that to the agent working on \`${busy.url}\` (job \`${busy.jobId}\`): ${outcome}. It is still running.`,
+        job: null,
+      };
+    }
+    return {
+      reply: `Passed that to the agent already on \`${busy.url}\` (job \`${busy.jobId}\`). It picks up from where it was, keeping what it has done.`,
+      job: null,
+    };
   };
   const slack = { channel: event.channel, threadTs: event.thread_ts ?? event.ts };
 
@@ -122,12 +139,7 @@ export async function handleMention({ event, config, deps = {} }) {
 
   if (kind === 'followup') {
     const busy = await alreadyOn(`PR #${pr}`);
-    if (busy) {
-      return {
-        reply: `Already working on PR #${pr} (job \`${busy.jobId}\`). Starting a second agent on it would have both push to the same branch and overwrite each other's PR body. Wait for that one to report, then send this again.`,
-        job: null,
-      };
-    }
+    if (busy) return handOver(busy, extra || stripMention(event.text ?? ''));
     const { jobId } = await start(config, { pr, extra, slack });
     const label = `PR #${pr}`;
     return { reply: describeStart({ url: label, jobId, followup: true }), job: { jobId, url: label } };
@@ -157,12 +169,7 @@ export async function handleMention({ event, config, deps = {} }) {
       }
       if (threadPr) {
         const busy = await alreadyOn(`PR #${threadPr}`);
-        if (busy) {
-          return {
-            reply: `Already working on PR #${threadPr} (job \`${busy.jobId}\`). Wait for it to report before sending more, or the two agents overwrite each other.`,
-            job: null,
-          };
-        }
+        if (busy) return handOver(busy, stripMention(event.text ?? ''));
         const context = renderThread(messages, { botUserId: config.botUserId });
         const { jobId } = await start(config, {
           pr: threadPr,
@@ -187,12 +194,7 @@ export async function handleMention({ event, config, deps = {} }) {
 
   const { url } = repos[0];
   const busy = await alreadyOn(url);
-  if (busy) {
-    return {
-      reply: `Already templating \`${url}\` (job \`${busy.jobId}\`). Wait for that one to finish rather than racing a second agent onto the same branch.`,
-      job: null,
-    };
-  }
+  if (busy) return handOver(busy, extra || stripMention(event.text ?? ''));
   const { jobId } = await start(config, { url, extra, slack });
   return { reply: describeStart({ url, jobId }), job: { jobId, url } };
 }

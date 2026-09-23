@@ -56,6 +56,53 @@ export function newJobId(now = Date.now(), rand = () => crypto.randomBytes(3).to
   return `${stamp}-${rand()}`;
 }
 
+/**
+ * What the agent is handed when someone speaks while it is working.
+ *
+ * It has to carry the instruction to CARRY ON. Resumed with the person's words
+ * alone, the agent answers them and exits, and the job is over: a question like
+ * "how is it going" would end the template.
+ */
+export function buildSteerPrompt(message) {
+  return `The person watching in Slack said this while you were working:
+
+${message}
+
+You were interrupted part way through a step to be given it, so before you act, check what state
+you actually left behind. A push, a deploy or a CI build may have gone out and still be running,
+and repeating one of those is worse than the interruption was.
+
+Then carry on with the same job, taking what they said into account. If it was a question, answer
+it in a sentence or two and keep going. If it changes the plan, append one \`note:\` line to your
+stage file saying what you changed.
+
+Nothing else about the job changes. Finish the way you were going to, with the RESULT section.`;
+}
+
+// Identical for a fresh start and for a resume; only the claude invocation
+// differs. Both end by writing the exit.code the poller waits on.
+function runnerScript(dir, claudeLine) {
+  return [
+    'export PATH="/data/home/.insta/bin:/data/home/bin:$PATH"',
+    // Own pid, recorded before any work, so the job can be stopped or steered later.
+    `echo $$ > ${dir}/pid`,
+    `cd ${dir}`,
+    // Chromium sits on the volume but its shared libraries sit on the root disk,
+    // which a restart wipes. Cheap check; the install runs once after a restart.
+    `if ! dpkg -s libnss3 >/dev/null 2>&1 || ! ls /data/home/.cache/ms-playwright 2>/dev/null | grep -q chromium; then`,
+    `  npx -y ${PLAYWRIGHT} install --with-deps chromium > ${dir}/setup.log 2>&1`,
+    'fi',
+    // No `set -e`: a failing claude must still reach the next line, because
+    // exit.code is what the poller waits for.
+    claudeLine,
+    `echo $? > ${dir}/exit.code`,
+    '',
+  ].join('\n');
+}
+
+const claudeFlags = (dir) =>
+  `--allowedTools ${ALLOWED_TOOLS.map((t) => `'${t}'`).join(' ')} --mcp-config ${dir}/mcp.json --strict-mcp-config`;
+
 // A job runs for tens of minutes. Without this the requester gets one message at
 // the start and then silence, and cannot tell a long build from a dead agent.
 export function stageInstructions(dir) {
@@ -185,7 +232,7 @@ export async function ensureLogin(config, run = execInsta) {
  * Starts the agent and returns as soon as it is running. Does NOT wait for it.
  */
 export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
-  const { run = execInBox, jobId = newJobId() } = deps;
+  const { run = execInBox, jobId = newJobId(), sessionId = crypto.randomUUID() } = deps;
   const dir = `${JOBS_ROOT}/${jobId}`;
   const task = pr ? buildFollowupTask({ pr, extra, dir }) : buildTask({ url, extra, dir });
 
@@ -194,10 +241,6 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
   // the outer quote at the first inner one, which leaves `Bash(insta *)` bare in
   // the shell (`Syntax error: "(" unexpected`) and eats the `*` as a glob.
   const taskB64 = Buffer.from(task, 'utf8').toString('base64');
-
-  // Safe to single-quote here: this string becomes a file, it is never re-parsed
-  // as part of a larger command line.
-  const tools = ALLOWED_TOOLS.map((t) => `'${t}'`).join(' ');
 
   // Headless, a fresh profile per job, root needs no-sandbox, screenshots beside
   // the job and never inside the instacloud-oss clone where a commit could take them.
@@ -212,29 +255,19 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
   });
   const mcpB64 = Buffer.from(mcp, 'utf8').toString('base64');
 
-  const runner = [
-    'export PATH="/data/home/.insta/bin:/data/home/bin:$PATH"',
-    // Own pid, recorded before any work, so the job can be stopped later.
-    `echo $$ > ${dir}/pid`,
-    `cd ${dir}`,
-    // Chromium sits on the volume but its shared libraries sit on the root disk,
-    // which a restart wipes. Cheap check; the install runs once after a restart.
-    `if ! dpkg -s libnss3 >/dev/null 2>&1 || ! ls /data/home/.cache/ms-playwright 2>/dev/null | grep -q chromium; then`,
-    `  npx -y ${PLAYWRIGHT} install --with-deps chromium > ${dir}/setup.log 2>&1`,
-    'fi',
-    // No `set -e`: a failing claude must still reach the next line, because
-    // exit.code is what the poller waits for.
-    `claude -p "$(cat ${dir}/task.txt)" --allowedTools ${tools} --mcp-config ${dir}/mcp.json --strict-mcp-config > ${dir}/out.log 2>&1`,
-    `echo $? > ${dir}/exit.code`,
-    '',
-  ].join('\n');
+  // The session id is ours, chosen up front rather than scraped back out of the
+  // output, so steering later is `--resume <that>` with no bookkeeping in between.
+  const runner = runnerScript(
+    dir,
+    `claude -p "$(cat ${dir}/task.txt)" --session-id ${sessionId} ${claudeFlags(dir)} > ${dir}/out.log 2>&1`,
+  );
   const runnerB64 = Buffer.from(runner, 'utf8').toString('base64');
 
   // Who to answer, written next to the job. The bot's own memory does not
   // survive a redeploy, and the agent keeps running when the bot restarts, so a
   // job whose thread lived only in memory finishes with nobody listening.
   const ticket = Buffer.from(
-    JSON.stringify({ jobId, url: url ?? (pr ? `PR #${pr}` : 'unknown'), ...slack }),
+    JSON.stringify({ jobId, sessionId, url: url ?? (pr ? `PR #${pr}` : 'unknown'), ...slack }),
     'utf8',
   ).toString('base64');
 
@@ -245,12 +278,55 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
     `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
     `printf '%s' '${mcpB64}' | base64 -d > ${dir}/mcp.json`,
     `printf '%s' '${ticket}' | base64 -d > ${dir}/slack.json`,
+    // Also beside the job, so steering works even if the ticket is unreadable.
+    `printf '%s' '${sessionId}' > ${dir}/session`,
     `nohup setsid sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null &`,
     'echo started',
   ].join('\n');
 
   await run(config, script, { timeoutMs: 120000 });
-  return { jobId, dir };
+  return { jobId, dir, sessionId };
+}
+
+/**
+ * Hands a running agent something a human just said, and lets it carry on.
+ *
+ * The agent is killed and resumed rather than interrupted in place: `claude -p`
+ * has no channel to speak into once it is running. That costs the step in
+ * flight and nothing else, because the session file is written turn by turn, so
+ * `--resume` picks up everything already done.
+ *
+ * Deliberately does NOT write exit.code. The job has not finished, and the
+ * poller watching it must stay attached across the restart.
+ */
+export async function steerJob(config, jobId, message, deps = {}) {
+  const { run = execInBox } = deps;
+  const dir = `${JOBS_ROOT}/${jobId}`;
+  const steerB64 = Buffer.from(buildSteerPrompt(message), 'utf8').toString('base64');
+
+  // `$(cat session)` rather than a baked id: the file is the record, and it is
+  // right even for a job this process did not start.
+  const runner = runnerScript(
+    dir,
+    `claude --resume "$(cat ${dir}/session)" -p "$(cat ${dir}/steer.txt)" ${claudeFlags(dir)} >> ${dir}/out.log 2>&1`,
+  );
+  const runnerB64 = Buffer.from(runner, 'utf8').toString('base64');
+
+  const script = [
+    `[ -d ${dir} ] || { echo "no such job"; exit 0; }`,
+    `[ -f ${dir}/exit.code ] && { echo "already finished"; exit 0; }`,
+    `[ -f ${dir}/session ] || { echo "no session to resume"; exit 0; }`,
+    `if [ -f ${dir}/pid ]; then kill -TERM -"$(cat ${dir}/pid)" 2>/dev/null || kill -TERM "$(cat ${dir}/pid)" 2>/dev/null; fi`,
+    `pkill -TERM -f "${dir}/run.sh" 2>/dev/null`,
+    'sleep 2',
+    `printf '%s' '${steerB64}' | base64 -d > ${dir}/steer.txt`,
+    `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
+    `nohup setsid sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null &`,
+    'echo steered',
+  ].join('\n');
+
+  const { stdout } = await run(config, script, { timeoutMs: 120000 });
+  return stdout.trim();
 }
 
 export async function readJob(config, jobId, deps = {}) {
