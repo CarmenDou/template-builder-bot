@@ -212,31 +212,71 @@ reported anywhere.${stages}`;
 }
 
 // argv, never a shell string, so a repo name can never become a command.
-function execInsta(config, args, { timeoutMs = 120000 } = {}) {
+function spawn(file, args, { timeoutMs = 120000, env } = {}) {
   return new Promise((resolve, reject) => {
-    execFile(
-      config.instaBin,
-      args,
-      {
-        timeout: timeoutMs,
-        maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, INSTA_PROJECT_ID: config.agentProjectId, CLAUDECODE: undefined },
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          error.stdout = stdout;
-          error.stderr = stderr;
-          reject(error);
-          return;
-        }
-        resolve({ stdout, stderr });
-      },
-    );
+    execFile(file, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env }, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
   });
 }
 
+// CLAUDECODE is stripped because the CLI switches to agent mode when it is set,
+// and agent mode is a different credential than the one this process holds.
+const instaEnv = (config) => ({
+  ...process.env,
+  INSTA_PROJECT_ID: config.agentProjectId,
+  CLAUDECODE: undefined,
+});
+
+function execInsta(config, args, opts) {
+  return spawn(config.instaBin, args, { ...opts, env: instaEnv(config) });
+}
+
+/**
+ * How this process reaches the agent box, as argv.
+ *
+ * Over ssh when the box has been set up for it, because `compute exec` caps a
+ * command at 64KB of argv and 180 seconds and drops the channel on a long one.
+ * Over exec otherwise, which is what the CLI's own help points automation at
+ * and what the tests and any machine without a certificate get.
+ *
+ * BatchMode because nothing here can answer a prompt, and -F because ssh finds
+ * ~/.ssh/config through the passwd entry rather than $HOME: the account this
+ * runs as has a different home than the one holding the certificate.
+ */
+export function boxCommand(config, script) {
+  if (config.sshConfig) {
+    return {
+      file: 'ssh',
+      args: [
+        '-F',
+        config.sshConfig,
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'ConnectTimeout=25',
+        config.sshAlias,
+        script,
+      ],
+      env: process.env,
+    };
+  }
+  return {
+    file: config.instaBin,
+    args: ['compute', 'exec', config.agentService, '--', 'sh', '-c', script],
+    env: instaEnv(config),
+  };
+}
+
 function execInBox(config, script, opts) {
-  return execInsta(config, ['compute', 'exec', config.agentService, '--', 'sh', '-c', script], opts);
+  const { file, args, env } = boxCommand(config, script);
+  return spawn(file, args, { ...opts, env });
 }
 
 export async function ensureLogin(config, run = execInsta) {
