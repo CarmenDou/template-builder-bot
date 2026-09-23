@@ -112,6 +112,18 @@ Append a line to your stage file for each thing you do, as before, so they can f
 with a RESULT section again: repeat last time's fields and change only the ones that changed.`;
 }
 
+// `pkill -f` matches every command line, including the shell running the script
+// it sits in, whose argument is the whole script. A bare path there killed its own
+// script mid-way: a steer that stopped the agent and never restarted it, a stop
+// that never wrote its exit code.
+//
+// The runner is matched by its entire command line, `sh <dir>/run.sh`, anchored,
+// so a script that merely mentions the path cannot match, which steer's must, since
+// it rewrites and relaunches the runner. What is left is bracketed on one
+// character, so the regex still finds other processes but not its own text.
+const runnerPattern = (dir) => `^(/bin/)?sh ${dir.replace(/\./g, '\\.')}/run\\.sh$`;
+const notThisScript = (pattern) => `[${pattern[0]}]${pattern.slice(1)}`;
+
 // Identical for a fresh start and for a resume; only the claude invocation
 // differs. Both end by writing the exit.code the poller waits on.
 function runnerScript(dir, claudeLine) {
@@ -451,7 +463,7 @@ export async function steerJob(config, jobId, message, deps = {}) {
     `else`,
     `  mode=steered`,
     `  if [ -f ${dir}/pid ]; then kill -TERM -"$(cat ${dir}/pid)" 2>/dev/null || kill -TERM "$(cat ${dir}/pid)" 2>/dev/null; fi`,
-    `  pkill -TERM -f "${dir}/run.sh" 2>/dev/null`,
+    `  pkill -TERM -f "${runnerPattern(dir)}" 2>/dev/null`,
     '  sleep 2',
     `  printf '%s' '${duringB64}' | base64 -d > ${dir}/steer.txt`,
     `fi`,
@@ -645,8 +657,8 @@ export async function stopJob(config, jobId, deps = {}) {
     // Preferred: the recorded pid, killed as a group.
     `if [ -f ${dir}/pid ]; then kill -TERM -"$(cat ${dir}/pid)" 2>/dev/null || kill -TERM "$(cat ${dir}/pid)" 2>/dev/null; fi`,
     // Fallback for jobs started before pids were recorded: match the runner path.
-    `pkill -TERM -f "${dir}/run.sh" 2>/dev/null`,
-    `pkill -TERM -f "${dir}/task.txt" 2>/dev/null`,
+    `pkill -TERM -f "${runnerPattern(dir)}" 2>/dev/null`,
+    `pkill -TERM -f "${notThisScript(`${dir}/task.txt`)}" 2>/dev/null`,
     `sleep 2`,
     `echo 143 > ${dir}/exit.code`,
     `echo stopped`,
