@@ -182,3 +182,30 @@ test('the help lists every command, including the ones added later', async () =>
   assert.match(out.reply, /I read the thread for it/, 'the bare-reply shortcut');
   assert.match(out.reply, /never publish/, 'says where its authority ends');
 });
+
+test('no pkill pattern can match the script it is written in', async () => {
+  // Found live: an unanchored `pkill -f "<dir>/run.sh"` matched the `sh -c`
+  // running it, whose argument is the whole script, and killed it part way.
+  // Each pattern is checked against the processes it is for and against the
+  // command line of the shell that runs it.
+  const scripts = [];
+  const record = (reply) => async (_c, s) => (scripts.push(s), { stdout: reply });
+  await steerJob(config, 'J1', 'anything', { run: record('steered 0 0') });
+  await stopJob(config, 'J1', { run: record('stopped') });
+
+  const targets = [
+    'sh /data/work/jobs/J1/run.sh',
+    '/bin/sh /data/work/jobs/J1/run.sh',
+    'claude -p /data/work/jobs/J1/task.txt --verbose',
+  ];
+  for (const script of scripts) {
+    const patterns = [...script.matchAll(/pkill -TERM -f "([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(patterns.length > 0, 'the script still cleans up by pattern');
+    for (const pattern of patterns) {
+      const re = new RegExp(pattern);
+      assert.ok(targets.some((t) => re.test(t)), `${pattern} still finds a job process`);
+      assert.ok(!re.test(`sh -c ${script}`), `${pattern} must not match the shell running this script`);
+    }
+  }
+  assert.equal(scripts.length, 2);
+});
