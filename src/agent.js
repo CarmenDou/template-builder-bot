@@ -417,7 +417,9 @@ export async function readJob(config, jobId, deps = {}) {
     `echo "---STAGES---"`,
     `cat ${dir}/stage.txt 2>/dev/null || true`,
     `echo "---STEPS---"`,
-    `tail -n 60 ${dir}/steps.txt 2>/dev/null || true`,
+    // Whole, not tailed: the trace is the history someone scrolls back through,
+    // and a window would quietly drop the beginning of a long job.
+    `cat ${dir}/steps.txt 2>/dev/null || true`,
     `echo "---LOG---"`,
     `tail -c 12000 ${dir}/out.log 2>/dev/null || true`,
   ].join('\n');
