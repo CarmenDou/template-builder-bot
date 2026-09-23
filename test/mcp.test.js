@@ -19,6 +19,7 @@ test('a notification gets no response at all', async () => {
 test('every tool says what it is for, and none of them can delete', () => {
   const names = TOOLS.map((t) => t.name).sort();
   assert.deepEqual(names, [
+    'ask_for_review',
     'continue_template_pr',
     'list_running_jobs',
     'read_job',
@@ -27,7 +28,7 @@ test('every tool says what it is for, and none of them can delete', () => {
     'stop_job',
   ]);
   // The box holds a platform key for the whole org. Nothing here may reach it:
-  // a caller can only do these six things, whatever it is asked to do.
+  // a caller can only do these seven things, whatever it is asked to do.
   const surface = JSON.stringify(TOOLS);
   assert.ok(!/delete|remove|destroy/i.test(surface), 'no destructive verb is offered');
   for (const t of TOOLS) assert.ok(t.description.length > 60, `${t.name} explains itself`);
