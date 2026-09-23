@@ -1,20 +1,19 @@
 import { parseList } from './command.js';
 
-const REQUIRED = [
-  'SLACK_SIGNING_SECRET',
-  'SLACK_BOT_TOKEN',
-  'ALLOWED_CHANNELS',
-  'INSTA_API_KEY',
-  'AGENT_PROJECT_ID',
-];
+const SLACK_REQUIRED = ['SLACK_SIGNING_SECRET', 'SLACK_BOT_TOKEN', 'ALLOWED_CHANNELS'];
+const CORE_REQUIRED = ['INSTA_API_KEY', 'AGENT_PROJECT_ID'];
 
-export function loadConfig(env = process.env) {
-  const missing = REQUIRED.filter((name) => !env[name]);
+// The stdio server has no Slack side to guard, so it opts out of SLACK_REQUIRED
+// rather than that check being loosened for the caller that still needs it.
+export function loadConfig(env = process.env, { needsSlack = true } = {}) {
+  const required = needsSlack ? [...SLACK_REQUIRED, ...CORE_REQUIRED] : CORE_REQUIRED;
+  const missing = required.filter((name) => !env[name]);
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(', ')}. ` +
-        'ALLOWED_CHANNELS is the only thing standing between Slack and an agent ' +
-        'that can push branches and deploy, so the bot refuses to start without it.',
+        (needsSlack
+          ? 'ALLOWED_CHANNELS is the only thing standing between Slack and an agent that can push branches and deploy, so the bot refuses to start without it.'
+          : 'INSTA_API_KEY and AGENT_PROJECT_ID are how this process reaches the platform at all.'),
     );
   }
 
