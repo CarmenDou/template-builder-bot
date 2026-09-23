@@ -228,18 +228,29 @@ test('readJob keeps log content that itself contains the separator', async () =>
 test('readJob returns the stage lines the agent has appended', async () => {
   const run = async () => ({
     stdout:
-      'STATUS running\n---STAGES---\ntriage: thin-shell — no HTTP face\npr: https://x/1 — waiting on CI\n---LOG---\n',
+      'STATUS running\n---STAGES---\ntriage: thin-shell — no HTTP face\npr: https://x/1 — waiting on CI\n---STEPS---\nRead templates/AGENTS.md\n$ insta template deploy .\n---LOG---\n',
   });
   const state = await readJob(config, 'J1', { run });
   assert.deepEqual(state.stages, [
     'triage: thin-shell — no HTTP face',
     'pr: https://x/1 — waiting on CI',
   ]);
+  assert.deepEqual(state.steps, ['Read templates/AGENTS.md', '$ insta template deploy .']);
   assert.equal(state.done, false);
 });
 
+test('output from before the trace existed still parses, minus the trace', async () => {
+  const run = async () => ({
+    stdout: 'STATUS done 0\n---STAGES---\ntriage: directly-usable — nothing to patch\n---LOG---\nRESULT\n',
+  });
+  const state = await readJob(config, 'J1', { run });
+  assert.deepEqual(state.stages, ['triage: directly-usable — nothing to patch']);
+  assert.deepEqual(state.steps, [], 'a missing section is empty, not the section after it');
+  assert.equal(state.log, 'RESULT');
+});
+
 test('no stage file yet means no stages, not a crash', async () => {
-  const run = async () => ({ stdout: 'STATUS running\n---STAGES---\n---LOG---\n' });
+  const run = async () => ({ stdout: 'STATUS running\n---STAGES---\n---STEPS---\n---LOG---\n' });
   const state = await readJob(config, 'J1', { run });
   assert.deepEqual(state.stages, []);
 });
