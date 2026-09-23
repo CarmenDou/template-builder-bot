@@ -272,3 +272,15 @@ test('the review result is reported, not used as a gate on the person', () => {
   assert.match(ask, /even with Critical findings open/);
   assert.doesNotMatch(ask, /only once that comes back clean/);
 });
+
+test('every follow_job answer ends by saying what to call next, with no sleep in it', async () => {
+  const running = async () => ({ activity: ['stage: pr: https://x/1'], offset: 42, stages: 3, done: false, exitCode: null });
+  const said = (await call('follow_job', { job_id: 'J9', offset: 0, stages: 0 }, { feed: running })).result.content[0].text;
+  const last = said.trim().split('\n').at(-1);
+  assert.match(last, /^Next: call follow_job\(job_id: "J9", offset: 42, stages: 3\) straight away/);
+  assert.match(last, /sleeping first only delays/);
+
+  const finished = async () => ({ activity: [], offset: 50, stages: 4, done: true, exitCode: 0 });
+  const end = (await call('follow_job', { job_id: 'J9', offset: 42, stages: 3 }, { feed: finished })).result.content[0].text;
+  assert.match(end.trim().split('\n').at(-1), /^Next: call read_job for the result/);
+});
