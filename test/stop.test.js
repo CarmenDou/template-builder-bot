@@ -109,7 +109,11 @@ test('steerJob restarts the agent on the same session and leaves the job open', 
     'base64',
   ).toString();
   assert.match(runner, /claude --resume "\$\(cat \S+session\)"/, 'resumes the same conversation');
-  assert.match(runner, />> \S+out\.log/, 'appends, so the earlier output is still there');
+  assert.match(
+    runner,
+    /\| node \S+steps\.js \S+ >> \S+out\.jsonl/,
+    'the resumed run goes through the same splitter and appends, so the trace spans both runs',
+  );
 
   const steerText = Buffer.from(
     script.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \S+steer\.txt/)[1],

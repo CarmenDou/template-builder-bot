@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 // Every job gets its own directory on the agent box's persistent volume:
 //   /data/work/jobs/<id>/task.txt   what we asked for
@@ -11,6 +12,15 @@ import crypto from 'node:crypto';
 // 10-minute template job outlives it. So the bot never holds the channel open --
 // it starts the work with nohup, lets the channel close, and polls afterwards.
 const JOBS_ROOT = '/data/work/jobs';
+
+const lines = (block) =>
+  String(block ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+// Read once at module load: it ships with this repo and lands in every job dir.
+const STEPS_JS = readFileSync(new URL('./box/steps.js', import.meta.url), 'utf8');
 
 // Tools the agent is allowed to use. Deliberately an allowlist rather than
 // bypassing permission checks: this box holds a GitHub token that can push to
@@ -94,14 +104,19 @@ function runnerScript(dir, claudeLine) {
     'fi',
     // No `set -e`: a failing claude must still reach the next line, because
     // exit.code is what the poller waits for.
-    claudeLine,
-    `echo $? > ${dir}/exit.code`,
+    //
+    // The stream goes through steps.js, which splits it into the live trace and
+    // the agent's prose while passing it through to the archive. `$?` after a
+    // pipeline is the SPLITTER's status, so claude's own is captured inside the
+    // braces and only becomes exit.code once the splitter has flushed.
+    `{ ${claudeLine} < /dev/null ; echo $? > ${dir}/claude.exit ; } 2>> ${dir}/stderr.log | node ${dir}/steps.js ${dir} >> ${dir}/out.jsonl`,
+    `cp ${dir}/claude.exit ${dir}/exit.code 2>/dev/null || echo 99 > ${dir}/exit.code`,
     '',
   ].join('\n');
 }
 
 const claudeFlags = (dir) =>
-  `--allowedTools ${ALLOWED_TOOLS.map((t) => `'${t}'`).join(' ')} --mcp-config ${dir}/mcp.json --strict-mcp-config`;
+  `--allowedTools ${ALLOWED_TOOLS.map((t) => `'${t}'`).join(' ')} --mcp-config ${dir}/mcp.json --strict-mcp-config --output-format stream-json --verbose`;
 
 // A job runs for tens of minutes. Without this the requester gets one message at
 // the start and then silence, and cannot tell a long build from a dead agent.
@@ -259,7 +274,7 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
   // output, so steering later is `--resume <that>` with no bookkeeping in between.
   const runner = runnerScript(
     dir,
-    `claude -p "$(cat ${dir}/task.txt)" --session-id ${sessionId} ${claudeFlags(dir)} > ${dir}/out.log 2>&1`,
+    `claude -p "$(cat ${dir}/task.txt)" --session-id ${sessionId} ${claudeFlags(dir)}`,
   );
   const runnerB64 = Buffer.from(runner, 'utf8').toString('base64');
 
@@ -271,10 +286,13 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
     'utf8',
   ).toString('base64');
 
+  const stepsB64 = Buffer.from(STEPS_JS, 'utf8').toString('base64');
+
   const script = [
     'set -e',
     `mkdir -p ${dir}`,
     `printf '%s' '${taskB64}' | base64 -d > ${dir}/task.txt`,
+    `printf '%s' '${stepsB64}' | base64 -d > ${dir}/steps.js`,
     `printf '%s' '${runnerB64}' | base64 -d > ${dir}/run.sh`,
     `printf '%s' '${mcpB64}' | base64 -d > ${dir}/mcp.json`,
     `printf '%s' '${ticket}' | base64 -d > ${dir}/slack.json`,
@@ -308,7 +326,7 @@ export async function steerJob(config, jobId, message, deps = {}) {
   // right even for a job this process did not start.
   const runner = runnerScript(
     dir,
-    `claude --resume "$(cat ${dir}/session)" -p "$(cat ${dir}/steer.txt)" ${claudeFlags(dir)} >> ${dir}/out.log 2>&1`,
+    `claude --resume "$(cat ${dir}/session)" -p "$(cat ${dir}/steer.txt)" ${claudeFlags(dir)}`,
   );
   const runnerB64 = Buffer.from(runner, 'utf8').toString('base64');
 
@@ -336,22 +354,28 @@ export async function readJob(config, jobId, deps = {}) {
     `if [ -f ${dir}/exit.code ]; then echo "STATUS done $(cat ${dir}/exit.code)"; else echo "STATUS running"; fi`,
     `echo "---STAGES---"`,
     `cat ${dir}/stage.txt 2>/dev/null || true`,
+    `echo "---STEPS---"`,
+    `tail -n 60 ${dir}/steps.txt 2>/dev/null || true`,
     `echo "---LOG---"`,
     `tail -c 12000 ${dir}/out.log 2>/dev/null || true`,
   ].join('\n');
 
   const { stdout } = await run(config, script, { timeoutMs: 60000 });
+  // Split from the outside in, so a missing marker loses that one section
+  // instead of folding the rest of the output into the section before it.
   const [head, ...afterStages] = stdout.split('---STAGES---');
-  const [stageBlock, ...rest] = afterStages.join('---STAGES---').split('---LOG---');
+  const [beforeLog, ...rest] = afterStages.join('---STAGES---').split('---LOG---');
+  const [stageBlock, ...stepParts] = beforeLog.split('---STEPS---');
+  const stepBlock = stepParts.join('---STEPS---');
   const statusLine = head.trim().split(/\s+/);
   const done = statusLine[1] === 'done';
   return {
     done,
     exitCode: done ? Number(statusLine[2]) : null,
-    stages: (stageBlock ?? '')
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean),
+    stages: lines(stageBlock),
+    // Every tool the agent has called, newest last. The stages are landmarks; this
+    // is the trace between them, and the only thing that moves during a long step.
+    steps: lines(stepBlock),
     log: rest.join('---LOG---').trim(),
   };
 }
