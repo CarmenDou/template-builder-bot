@@ -1,4 +1,4 @@
-import { startJob, readJob, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
+import { startJob, readJob, jobFeed, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
 import { askForReview } from './review.js';
 
 // The job-control layer, offered to a conversational agent as MCP tools.
@@ -51,10 +51,24 @@ const TOOLS = [
   {
     name: 'read_job',
     description:
-      'What a job has done so far: whether it finished, the progress lines it wrote, the tail of its output, and its result once there is one. Use this to answer questions about a running job rather than interrupting it.',
+      'What a job has done so far: whether it finished, the progress lines it wrote, the tail of its output, and its result once there is one. Use this to answer questions about a running job rather than interrupting it. To watch one live, use follow_job.',
     inputSchema: {
       type: 'object',
       properties: { job_id: { type: 'string' } },
+      required: ['job_id'],
+    },
+  },
+  {
+    name: 'follow_job',
+    description:
+      "Follow a running job live. Waits up to about 45 seconds for it to do something, answering early when a milestone lands or it finishes, and returns only what it did since your last call, plus `offset` and `stages` to pass to the next call. Call it in a loop until `done` is true, with nothing in between: it does the waiting itself, so never sleep between calls. After each call tell the person in ONE plain sentence what the job did and why, never the raw lines. When `done`, call read_job for the result and report it. Ending your turn does NOT stop the job, which runs on another machine: if someone says stop, call stop_job.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        job_id: { type: 'string' },
+        offset: { type: 'number', description: 'From the previous call; 0 the first time.' },
+        stages: { type: 'number', description: 'From the previous call; 0 the first time.' },
+      },
       required: ['job_id'],
     },
   },
@@ -110,6 +124,7 @@ async function callTool(config, name, args, deps) {
   const {
     start = startJob,
     read = readJob,
+    feed = jobFeed,
     steer = steerJob,
     stop = stopJob,
     running = listRunningJobs,
@@ -119,7 +134,7 @@ async function callTool(config, name, args, deps) {
   // The job never posts anywhere itself. Whoever started it follows it and does
   // the talking, so the conversation has one voice that can also hear the reply.
   const follow = (jobId) =>
-    ` It says nothing on its own. Follow it with: /data/.hermes/bin/follow ${jobId} 0 0`;
+    ` It says nothing on its own. Follow it now with follow_job(job_id: "${jobId}", offset: 0, stages: 0), in a loop until it is done.`;
 
   // The one guard that cannot be a rule the caller remembers: under pressure,
   // with three people talking at once, remembering is exactly what fails.
@@ -177,6 +192,19 @@ async function callTool(config, name, args, deps) {
           1,
         ),
       );
+    }
+
+    case 'follow_job': {
+      try {
+        const f = await feed(config, String(args?.job_id ?? ''), { offset: args?.offset, stages: args?.stages });
+        const body = f.activity.length > 0 ? f.activity.join('\n') : '(nothing new since the last call)';
+        return text(
+          `${body}\n\noffset: ${f.offset}\nstages: ${f.stages}\ndone: ${f.done}${f.done ? ` (exit ${f.exitCode})` : ''}`,
+        );
+      } catch (error) {
+        // A dropped channel is ordinary on a busy box. Say so, and say to go on.
+        return text(`No answer from the box this time (${error.message.slice(0, 120)}). Call follow_job again with the same offset and stages.`);
+      }
     }
 
     case 'steer_job': {

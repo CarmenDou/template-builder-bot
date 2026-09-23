@@ -29,14 +29,10 @@ it takes, 10 to 30 minutes, and then start following it straight away, in the sa
 
 ## Following, until it is done
 
-Loop on exactly this, one call per look, with nothing added, wrapped or quoted:
-
-    /data/.hermes/bin/follow <jobId> <offset> <stages>
-
-Start with offset `0` and stages `0`. Every run ends with a line like
-`next: 1880737 8 status: running`; pass those two numbers back on the next call. It waits on the
-agent box by itself, up to about 45 seconds, and answers early the moment a milestone lands or the
-job ends. Never put `sleep` in front of it or around it.
+Call `follow_job` in a loop, starting with offset `0` and stages `0` and passing back the `offset`
+and `stages` each result gives you. It waits on the agent box by itself, up to about 45 seconds,
+and answers early the moment a milestone lands or the job ends, so there is nothing to do between
+calls: never sleep, never poll with `read_job`.
 
 What comes back since your last look:
 

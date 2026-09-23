@@ -427,6 +427,36 @@ export async function steerJob(config, jobId, message, deps = {}) {
   return stdout.trim();
 }
 
+/**
+ * What a job did since the caller last looked, waiting up to `waitSeconds` for it
+ * to do something. Answers early when a milestone lands or the job ends.
+ *
+ * The wait happens on the box, inside job-feed, so the caller has one call to make
+ * in a loop and no sleep of its own to get wrong. `offset` and `stages` come back
+ * in the result and go straight into the next call.
+ */
+export async function jobFeed(config, jobId, { offset = 0, stages = 0, waitSeconds = 45 } = {}, deps = {}) {
+  const { run = execInBox } = deps;
+  if (!/^[\w-]+$/.test(String(jobId))) throw new Error(`not a job id: ${jobId}`);
+  const n = (v) => Math.max(0, Math.floor(Number(v) || 0));
+  const { stdout } = await run(
+    config,
+    `/data/home/bin/job-feed ${jobId} ${n(offset)} ${n(stages)} ${n(waitSeconds)}`,
+    { timeoutMs: (n(waitSeconds) + 60) * 1000 },
+  );
+  const lines = stdout.trim().split('\n');
+  const tail = lines.at(-1) ?? '';
+  const m = tail.match(/^next: (\d+) (\d+) status: (running|done exit=(-?\d+))$/);
+  if (!m) throw new Error(`job-feed answered with something else: ${tail.slice(0, 200)}`);
+  return {
+    activity: lines.slice(0, -1),
+    offset: Number(m[1]),
+    stages: Number(m[2]),
+    done: m[3] !== 'running',
+    exitCode: m[4] === undefined ? null : Number(m[4]),
+  };
+}
+
 export async function readJob(config, jobId, deps = {}) {
   const { run = execInBox } = deps;
   const dir = `${JOBS_ROOT}/${jobId}`;
