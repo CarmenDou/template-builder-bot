@@ -255,6 +255,17 @@ test('no stage file yet means no stages, not a crash', async () => {
   assert.deepEqual(state.stages, []);
 });
 
+test('the steps it is asked to report are the steps it actually walks', () => {
+  // The four it had before stopped at `build`, so the twenty minutes of
+  // deploying and debugging a stalled migration had no line to be written on,
+  // and the thread went quiet at exactly the interesting part.
+  const task = buildTask({ url: 'https://github.com/a/b', dir: '/data/work/jobs/J1' });
+  for (const step of ['triage:', 'manifest:', 'pr:', 'build:', 'deploy:', 'verify:']) {
+    assert.match(task, new RegExp(step.replace(':', ':')), `${step} has somewhere to be reported`);
+  }
+  assert.match(task, /more than about five minutes/, 'a long step still has to say something');
+});
+
 test('the task tells the agent where to append its stages', () => {
   const task = buildTask({ url: 'https://github.com/a/b', dir: '/data/work/jobs/J1' });
   assert.match(task, /\/data\/work\/jobs\/J1\/stage\.txt/);
