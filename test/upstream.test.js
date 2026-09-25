@@ -6,6 +6,9 @@ import {
   openUpstreamPr,
   parseRepo,
   publishedTemplate,
+  readmeBriefing,
+  spliceRegion,
+  verifyEdit,
   upstreamLink,
   upstreamOffer,
   UpstreamError,
@@ -33,23 +36,86 @@ test('the button points at the gallery page, not at the console', () => {
   assert.ok(!line.includes('?repo='), 'and not a manifest-in-their-repo deploy link either');
 });
 
-test('the button joins the badge row a project already has', () => {
-  const line = deployButton(CODE);
-  const readme = '# Kuma\n\n[![Deploy on Railway](a.svg)](b)\n\nText.';
-  const out = withButton(readme, line).split('\n');
-  assert.equal(out[3], line, 'directly under the row it belongs to');
+// ---- where the button goes ---------------------------------------------------
+//
+// Two answers only: where a project already put the other deploy buttons, or a section of our own.
+// Joining a row of Colab, PyPI and docs badges is neither, and is what laya's first offer did.
+
+const BTN = deployButton(CODE);
+const lines = (readme) => withButton(readme, BTN).split('\n');
+
+test('a table of deploy buttons gets a column, not a row', () => {
+  const readme = [
+    '### One-click Deployment',
+    '',
+    '| Railway | Zeabur |',
+    '| --- | --- |',
+    '| [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/x) | [![Deploy on Zeabur](https://zeabur.com/button.svg)](https://zeabur.com/t/y) |',
+    '',
+  ].join('\n');
+  const out = lines(readme);
+  assert.equal(out.length, readme.split('\n').length, 'a column adds no lines');
+  assert.equal(out[2], '| Railway | Zeabur | InstaCloud |');
+  assert.equal(out[3], '| --- | --- | --- |');
+  assert.ok(out[4].endsWith(`| ${BTN} |`), 'the button is the last cell of the button row');
 });
 
-test('with no badge row it goes under the first heading, where a reader looks', () => {
-  const out = withButton('# Title\n\nText.', deployButton(CODE)).split('\n');
-  assert.equal(out[0], '# Title');
-  assert.equal(out[2], deployButton(CODE));
+test('a longer table keeps every row the same width', () => {
+  const readme = [
+    '| Host | Button |',
+    '| --- | --- |',
+    '| Railway | [![Deploy on Railway](r.svg)](https://railway.com/deploy/x) |',
+    '| Zeabur | [![Deploy on Zeabur](z.svg)](https://zeabur.com/t/y) |',
+  ].join('\n');
+  const out = lines(readme);
+  const widths = out.slice(0, 4).map((r) => r.split('|').length);
+  assert.deepEqual(widths, [5, 5, 5, 5], 'a short row renders as a broken table');
+  assert.ok(out[2].includes(BTN), 'the button goes in the first body row, beside the others');
+  assert.ok(!out[3].includes(BTN), 'and not in every row');
+});
+
+test('a badge row that IS deploy buttons is joined, at its end', () => {
+  const readme = '# Kuma\n\n[![Deploy on Railway](a.svg)](b)\n[![Deploy on Render](c.svg)](d)\n\nText.';
+  const out = lines(readme);
+  assert.equal(out[4], BTN, 'after the last of them, not into the middle of their order');
+});
+
+test('a badge row that is NOT deploy buttons gets a section instead of being joined', () => {
+  // laya's row is Colab, PyPI and docs. A deploy button in the middle of it is not where the
+  // deploy buttons live, it is the middle of somebody's links.
+  const readme = [
+    '<div align="center">',
+    '',
+    '[![Open In Colab](colab.svg)](https://colab.research.google.com/x)',
+    '[![PyPI version](pypi.svg)](https://pypi.org/project/x/)',
+    '',
+    '</div>',
+    '',
+    '## Installation',
+    '',
+    'Text.',
+  ].join('\n');
+  const out = lines(readme);
+  assert.ok(!out[4].includes(BTN), 'it did not join the row');
+  const at = out.indexOf(BTN);
+  assert.equal(out[at - 2], '## One-click Deployment');
+  assert.ok(at < out.indexOf('## Installation'), 'the section goes before the first real section');
+});
+
+test('the section is a heading and a button, and nothing else', () => {
+  const out = lines('# Title\n\nPitch.\n\n## Usage\n\nText.');
+  const at = out.indexOf(BTN);
+  assert.equal(out[at - 2], '## One-click Deployment');
+  assert.equal(out[at - 1], '', 'a blank line under the heading');
+  assert.equal(out[at + 1], '', 'and one above whatever follows');
+  assert.equal(out[at + 2], '## Usage');
+  // No prose about our product in someone else's README: that is a thing they would have to edit.
+  assert.equal(out.filter((l) => l && !l.startsWith('#') && l !== BTN).length, 2, 'only their own prose remains');
 });
 
 test('adding the button twice changes nothing', () => {
-  const line = deployButton(CODE);
-  const once = withButton('# Title\n\nText.', line);
-  assert.equal(withButton(once, line), once);
+  const once = withButton('# Title\n\nText.', BTN);
+  assert.equal(withButton(once, BTN), once);
 });
 
 test('a # inside a code fence is a comment, not a heading to sit under', () => {
@@ -65,38 +131,111 @@ test('a # inside a code fence is a comment, not a heading to sit under', () => {
     'r = router.predict(text)',
     '```',
   ].join('\n');
-  const out = withButton(readme, deployButton(CODE)).split('\n');
-  const at = out.indexOf(deployButton(CODE));
-  assert.ok(at >= 0, 'the button is somewhere');
-  assert.ok(at < out.indexOf('```python'), `the button went inside the fence, at line ${at}`);
+  const out = lines(readme);
+  assert.ok(out.indexOf(BTN) > out.indexOf('```', out.indexOf('```') + 1), 'the button went inside the fence');
 });
 
 test('a closing fence is not read as a second opening one', () => {
   const readme = ['```', '# not a heading', '```', '', '# Real Heading', '', 'Text.'].join('\n');
-  const out = withButton(readme, deployButton(CODE)).split('\n');
-  assert.equal(out[out.indexOf('# Real Heading') + 2], deployButton(CODE));
+  const out = lines(readme);
+  assert.ok(out.indexOf(BTN) > out.indexOf('# Real Heading'), 'it belongs under the real heading');
 });
 
-test('it joins a badge row that is not made of deploy buttons', () => {
-  // laya's row is Colab, PyPI, Docs, Hugging Face. Matching vendor names in the alt text found
-  // nothing there and fell through to the heading search, which is how the fence bug was reached.
+test('a table about deployment is not a table of deploy buttons', () => {
+  // laya compares "Deployment Mode" against latency. A looser test read that as a row of deploy
+  // buttons and added an InstaCloud column to it.
   const readme = [
-    '<div align="center">',
+    '# Title',
     '',
-    '[![Open In Colab](colab.svg)](https://colab.research.google.com/x)',
-    '[![PyPI version](pypi.svg)](https://pypi.org/project/laya/)',
+    '| Deployment Mode | Latency |',
+    '| --- | --- |',
+    '| `Router()` | under 1 ms |',
     '',
-    '</div>',
+    '## Next',
   ].join('\n');
-  const out = withButton(readme, deployButton(CODE)).split('\n');
-  assert.equal(out[4], deployButton(CODE), 'appended after the LAST badge, not inserted into their order');
-  assert.equal(out[2], '[![Open In Colab](colab.svg)](https://colab.research.google.com/x)', 'their order is untouched');
+  const out = lines(readme);
+  assert.equal(out[2], '| Deployment Mode | Latency |', 'their table is untouched');
+  assert.ok(out.includes(BTN));
 });
 
-test('a line that merely mentions a badge is not a badge row', () => {
-  const readme = ['# Title', '', 'We use [![CI](ci.svg)](ci) to check builds.', ''].join('\n');
-  const out = withButton(readme, deployButton(CODE)).split('\n');
-  assert.equal(out[2], deployButton(CODE), 'it went under the heading, not after the prose');
+// ---- the guard on a written edit ---------------------------------------------
+//
+// The text can come from a model, so the question these answer is not whether it wrote something
+// sensible but whether it can have destroyed anything. Taste is why a model writes this at all.
+
+const README = ['# Kuma', '', 'A monitor.', '', '[docs](https://kuma.example/docs)', '', '## Install', '', 'Text.'].join('\n');
+
+test('a small addition carrying the button is accepted', () => {
+  const ok = withButton(README, BTN);
+  assert.deepEqual(verifyEdit(README, ok, BTN), { added: 4, removed: 0 });
+});
+
+test('an edit that shortens the README is refused, even when it drops no link and few lines', () => {
+  // The case the line count and the link census both miss: one long paragraph replaced by a short
+  // one, in the same place, with the button added. Two lines changed, nothing dropped, and most of
+  // the prose gone.
+  const long = ['# Kuma', '', 'A monitor. '.repeat(400), '', '[docs](https://kuma.example/docs)', '', '## Install'].join('\n');
+  const gutted = ['# Kuma', '', 'A monitor.', BTN, '', '[docs](https://kuma.example/docs)', '', '## Install'].join('\n');
+  assert.throws(() => verifyEdit(long, gutted, BTN), /shorter than the README/);
+});
+
+test('an edit that drops one of their links is refused, and names it', () => {
+  const dropped = withButton(README, BTN).replace('[docs](https://kuma.example/docs)', '[docs]()');
+  assert.throws(() => verifyEdit(README, dropped, BTN), /https:\/\/kuma\.example\/docs/);
+});
+
+test('an edit may not bring in a link of its own', () => {
+  const extra = withButton(README, BTN).replace(BTN, `${BTN}\nAlso see [us](https://example.test/promo).`);
+  assert.throws(() => verifyEdit(README, extra, BTN), /neither ours nor already in the README/);
+});
+
+test('the button has to appear exactly once', () => {
+  assert.throws(() => verifyEdit(README, `${README}\n`, BTN), /exactly once, and it appears 0/);
+  assert.throws(() => verifyEdit(README, `${README}\n${BTN}\n${BTN}\n`, BTN), /exactly once, and it appears 2/);
+});
+
+test('a README that already links to the template is refused before anything else', () => {
+  const already = withButton(README, BTN);
+  assert.throws(() => verifyEdit(already, `${already}\nmore`, BTN), /already links to this template/);
+});
+
+test('an edit in two distant places counts as everything between them', () => {
+  // Which is the point: one button is one place, and a change near the top plus a change near the
+  // bottom is a rewrite wearing two small diffs.
+  // The filler goes AFTER the anchor the button lands on, or the two changes are three lines
+  // apart and the test proves nothing.
+  const long = ['# Kuma', '', 'A monitor.', '', '## Install', '', ...Array.from({ length: 40 }, (_, i) => `line ${i}`), '', 'Text.'].join('\n');
+  const both = withButton(long, BTN).replace('Text.', 'Text, rewritten.');
+  assert.throws(() => verifyEdit(long, both, BTN), /changes \d+ lines/);
+  // And the same edit without the distant second change is fine.
+  assert.doesNotThrow(() => verifyEdit(long, withButton(long, BTN), BTN));
+});
+
+test('a rewrite that keeps every link and the length is still refused for its size', () => {
+  const padded = [`# Kuma`, '', BTN, '', 'A monitor.', '', '[docs](https://kuma.example/docs)', '',
+    'One.', 'Two.', 'Three.', 'Four.', 'Five.', 'Six.', 'Seven.', 'Eight.', '## Install', '', 'Text.'].join('\n');
+  assert.throws(() => verifyEdit(README, padded, BTN), /should change at most/);
+});
+
+test('spliceRegion replaces the lines it was given and nothing else', () => {
+  const out = spliceRegion(README, 3, 3, 'A monitor.\n\n## One-click Deployment');
+  assert.equal(out.split('\n')[2], 'A monitor.');
+  assert.equal(out.split('\n')[4], '## One-click Deployment');
+  assert.ok(out.includes('[docs](https://kuma.example/docs)'), 'the rest is untouched');
+});
+
+test('spliceRegion refuses a region that is not in the file', () => {
+  for (const [from, to] of [[0, 1], [1, 999], [5, 2], ['a', 3]]) {
+    assert.throws(() => spliceRegion(README, from, to, 'x'), UpstreamError, `${from}..${to}`);
+  }
+});
+
+test('the briefing numbers from 1 and marks what it left out', () => {
+  const long = ['# Title', ...Array.from({ length: 300 }, (_, i) => `line ${i}`)].join('\n');
+  const brief = readmeBriefing(long);
+  assert.match(brief, /^ {2}1 \| # Title$/m);
+  assert.match(brief, /\.\.\. \(301 lines in all\)/);
+  assert.ok(brief.split('\n').length < 80, 'it is a briefing, not the file');
 });
 
 // ---- reading the registry's own manifest -----------------------------------

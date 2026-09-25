@@ -26,12 +26,13 @@ test('every tool says what it is for, and none of them can delete', () => {
     'offer_template_upstream',
     'read_job',
     'review_status',
+    'send_upstream_offer',
     'start_template_job',
     'steer_job',
     'stop_job',
   ]);
   // The box holds a platform key for the whole org. Nothing here may reach it:
-  // a caller can only do these ten things, whatever it is asked to do.
+  // a caller can only do these eleven things, whatever it is asked to do.
   const surface = JSON.stringify(TOOLS);
   assert.ok(!/delete|remove|destroy/i.test(surface), 'no destructive verb is offered');
   for (const t of TOOLS) assert.ok(t.description.length > 60, `${t.name} explains itself`);
@@ -290,33 +291,67 @@ test('a quiet look says nothing, so a short wait does not turn into chatter', ()
   assert.match(d, /about 20 seconds/);
 });
 
-test('offering upstream takes a template code and nothing a caller could aim', async () => {
-  // The credential behind this is broad, so nothing a caller writes may decide which repository
-  // gets written to. The code is the only argument, and everything else is derived from it: the
-  // catalog says whether it is published, its manifest says whose project it is.
-  const tool = TOOLS.find((t) => t.name === 'offer_template_upstream');
-  assert.deepEqual(Object.keys(tool.inputSchema.properties), ['template_code']);
+const OPENED = {
+  url: 'https://github.com/louislam/uptime-kuma/pull/9',
+  number: 9,
+  upstream: 'louislam/uptime-kuma',
+  declared: 'louislam/uptime-kuma',
+  fork: 'CarmenDou/uptime-kuma',
+  branch: 'instacloud-deploy-button',
+  added: 4,
+  removed: 0,
+};
+
+test('the preview writes nothing and hands back what the decision needs', async () => {
+  let sent = null;
+  const res = await call('offer_template_upstream', { template_code: 'uptime-kuma' }, {
+    openPr: async (_c, input) => {
+      sent = input;
+      return {
+        preview: true,
+        upstream: 'kuma-org/uptime-kuma',
+        declared: 'louislam/uptime-kuma',
+        line: '[![Deploy on InstaCloud](b.svg)](https://instacloud.com/templates/uptime-kuma)',
+        lines: 120,
+        briefing: '  1 | # Kuma',
+      };
+    },
+  });
+  assert.deepEqual(sent, { code: 'uptime-kuma', preview: true }, 'it asks for a preview, not a write');
+  const out = res.result.content[0].text;
+  assert.match(out, /kuma-org\/uptime-kuma is where this would go/);
+  assert.match(out, /which is a fork, so this goes to the project that was forked from/);
+  assert.match(out, /1 \| # Kuma/);
+  assert.match(out, /call send_upstream_offer/);
+});
+
+test('sending takes a template code and nothing a caller could aim', async () => {
+  // The credential behind this is broad, so nothing a caller writes may decide WHICH repository
+  // gets written to. The code decides that, and everything else is derived from it. What a caller
+  // does get to write is the text of one region of one file, which is checked before it is pushed.
+  const tool = TOOLS.find((t) => t.name === 'send_upstream_offer');
+  assert.deepEqual(Object.keys(tool.inputSchema.properties), ['template_code', 'from', 'to', 'text']);
 
   let sent = null;
   const res = await call(
-    'offer_template_upstream',
+    'send_upstream_offer',
     { template_code: 'uptime-kuma', repo_url: 'https://github.com/someone/else' },
-    {
-      openPr: async (_c, input) => {
-        sent = input;
-        return {
-          url: 'https://github.com/louislam/uptime-kuma/pull/9',
-          number: 9,
-          upstream: 'louislam/uptime-kuma',
-          fork: 'CarmenDou/uptime-kuma',
-          branch: 'instacloud-deploy-button',
-        };
-      },
-    },
+    { openPr: async (_c, input) => ((sent = input), OPENED) },
   );
-  assert.deepEqual(sent, { code: 'uptime-kuma' }, 'the extra argument is not passed through');
+  assert.deepEqual(sent, { code: 'uptime-kuma', edit: undefined }, 'the extra argument is not passed through');
   assert.match(res.result.content[0].text, /louislam\/uptime-kuma/);
   assert.match(res.result.content[0].text, /instacloud\.com\/templates\/uptime-kuma/);
+  assert.match(res.result.content[0].text, /adds 4 line\(s\) and changes 0/);
+});
+
+test('a region named by the caller is passed through as the edit', async () => {
+  let sent = null;
+  await call(
+    'send_upstream_offer',
+    { template_code: 'uptime-kuma', from: 12, to: 14, text: '## One-click Deployment' },
+    { openPr: async (_c, input) => ((sent = input), OPENED) },
+  );
+  assert.deepEqual(sent, { code: 'uptime-kuma', edit: { from: 12, to: 14, text: '## One-click Deployment' } });
 });
 
 test('a refusal from the gate is reported as one, not as a success', async () => {
@@ -342,13 +377,24 @@ test('a missing code is refused by name rather than reported as "(no code)" work
   assert.match(res.result.content[0].text, /\(no code\)/);
 });
 
-test('offering upstream says it is outward, needs a person, and needs the template published', () => {
+test('the preview says it writes nothing, so it can be called freely', () => {
   const d = TOOLS.find((t) => t.name === 'offer_template_upstream').description;
+  assert.match(d, /READ ONLY/);
+  assert.match(d, /Writes nothing and opens nothing/);
+  // The gate and the derivation, both stated where the caller reads them.
+  assert.match(d, /must already be PUBLISHED/);
+  assert.match(d, /following a fork through to the project itself/);
+});
+
+test('sending says it is outward, needs a person, and what it will refuse', () => {
+  const d = TOOLS.find((t) => t.name === 'send_upstream_offer').description;
   assert.match(d, /Only when a person has said to send it/);
   assert.match(d, /cannot be taken back/);
   assert.match(d, /Never because a job finished or a template published/);
-  // The gate and the derivation, both stated where the caller reads them.
-  assert.match(d, /must already be PUBLISHED/);
-  assert.match(d, /never from a caller/);
-  assert.match(d, /ONE line/);
+  // What the caller may write, and what will be done to it before it is pushed.
+  assert.match(d, /may only add/);
+  assert.match(d, /may not introduce a link that is not ours/);
+  assert.match(d, /in their language/);
+  // And that a second call revises rather than reopens, which is the answer to "I do not like it".
+  assert.match(d, /replaces the commit on the same branch/);
 });
