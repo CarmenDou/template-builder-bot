@@ -231,7 +231,17 @@ export function offerText(template) {
 export async function openUpstreamPr(config, { code }, deps = {}) {
   const { fetchImpl = fetch, wait = sleep } = deps;
   if (!config.githubPrToken) {
-    throw new UpstreamError('No GitHub credential is configured for opening pull requests upstream.');
+    // Names BOTH places, because there are two and the obvious one is not enough. Setting the
+    // secret on the hermes service puts the name in that CONTAINER's environment; hermes then
+    // launches this server with an explicit env map in ~/.hermes/config.yaml, and a name missing
+    // from that map is absent here regardless. The first time this fired, the message said only
+    // "no credential is configured" and was read as the agent box being unconfigured, which sent
+    // the reader somewhere the problem was not.
+    throw new UpstreamError(
+      'GITHUB_PR_TOKEN is not in this process\'s environment, so there is no credential to open a pull request with. '
+      + 'When this runs as hermes\' MCP server it has to be in TWO places: a secret on the hermes service, AND a name in '
+      + 'the env map of ~/.hermes/config.yaml, which is a whitelist. Restart hermes after adding it there.',
+    );
   }
   // Published first, and before the fork: every write below is on someone else's
   // account, and none of it should happen for a template with no page to link to.

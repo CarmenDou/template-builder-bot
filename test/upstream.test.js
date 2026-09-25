@@ -291,12 +291,15 @@ test('the scope failure is named, because it is the one with a fix', async () =>
   await assert.rejects(() => run({ script: denied }), /classic token with public_repo/);
 });
 
-test('without a credential it refuses before touching anything', async () => {
+test('without a credential it refuses before touching anything, and names both places', async () => {
   const seen = [];
-  await assert.rejects(
-    () => openUpstreamPr({}, { code: CODE }, { fetchImpl: world({}, seen), wait: async () => {} }),
-    /No GitHub credential/,
-  );
+  const rejected = openUpstreamPr({}, { code: CODE }, { fetchImpl: world({}, seen), wait: async () => {} });
+  await assert.rejects(rejected, /GITHUB_PR_TOKEN is not in this process/);
+  // The first version of this message said only that no credential was configured, and was read as
+  // the agent box being unconfigured. The secret on the service and the env map hermes launches
+  // this with are two different places, and a reader who is told about one will check that one.
+  await assert.rejects(rejected, /secret on the hermes service/);
+  await assert.rejects(rejected, /env map of ~\/\.hermes\/config\.yaml/);
   assert.deepEqual(seen, [], 'not even the catalog read');
 });
 
