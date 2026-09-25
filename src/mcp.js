@@ -122,10 +122,25 @@ const TOOLS = [
   {
     name: 'offer_template_upstream',
     description:
-      "Open a pull request on the ORIGINAL project's repository adding ONE line to their README: a Deploy on InstaCloud button linking to the template's gallery page. Nothing else, and nothing for them to maintain, because the template lives in our registry. Takes the template's code and derives everything else from it: the code must already be PUBLISHED (a button pointing at a page that does not exist yet is the one way this becomes rude), and the project it goes to comes from that template's own manifest, never from a caller. Only when a person has said to send it: this reaches a repository that is not ours, cannot be taken back, and is opened under the account whose credential this holds. Never because a job finished or a template published.",
+      "READ ONLY, and the first half of offering a template back to the project it was built from. Takes the template's code, works out which project that is (the code must already be PUBLISHED, and the repository comes from the template's own manifest, following a fork through to the project itself), and returns that repository, the one Deploy on InstaCloud line to add, and a numbered briefing of their README. Writes nothing and opens nothing, so call it freely. Then decide WHERE the line belongs and call send_upstream_offer.",
     inputSchema: {
       type: 'object',
       properties: { template_code: { type: 'string' } },
+      required: ['template_code'],
+    },
+  },
+  {
+    name: 'send_upstream_offer',
+    description:
+      "Open the pull request offer_template_upstream previewed. You supply the replacement text for ONE region of their README, named by the line numbers in that briefing, and this splices it in and checks it before pushing: the edit may only add, it may not drop anything they had, it may not introduce a link that is not ours, and it has to be small. Write the region the way THEIR README is written, in their language, joining their deploy buttons if they have any and adding a short One-click Deployment section if they do not. Omit from/to/text and a built-in placement is used instead. Only when a person has said to send it: this reaches a repository that is not ours, cannot be taken back, and is opened under the account whose credential this holds. Never because a job finished or a template published. Calling it again for the same template replaces the commit on the same branch, so a pull request can be revised rather than reopened.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        template_code: { type: 'string' },
+        from: { type: 'integer', description: 'first line of the region to replace, as the briefing numbers it' },
+        to: { type: 'integer', description: 'last line of the region, included' },
+        text: { type: 'string', description: 'what those lines become, containing the button line exactly once' },
+      },
       required: ['template_code'],
     },
   },
@@ -278,13 +293,45 @@ async function callTool(config, name, args, deps) {
       return text(`${heading}\n\n${blocks.join('\n\n')}`);
     }
 
+    // The code is the ONLY thing that decides WHICH repository either of these touches: the catalog
+    // says whether it is published, its own manifest names the project, and a fork is followed
+    // through. The credential is broad, so nothing a caller writes may aim it. What a caller does
+    // get to write is the text of one region of one file, which is checked before it is pushed.
     case 'offer_template_upstream': {
       const code = String(args?.template_code ?? '');
-      // The code is the ONLY input, and every other value is derived from it: the catalog says
-      // whether it is published, and its own manifest names the project. The credential is broad,
-      // so nothing a caller writes may decide which repository gets written to.
       try {
-        const pr = await openPr(config, { code });
+        const seen = await openPr(config, { code, preview: true });
+        const through = seen.declared !== seen.upstream
+          ? `\nIts manifest names ${seen.declared}, which is a fork, so this goes to the project that was forked from.`
+          : '';
+        return text(
+          [
+            `${seen.upstream} is where this would go.${through}`,
+            '',
+            `The line to add, exactly as written:\n${seen.line}`,
+            '',
+            `Their README, ${seen.lines} lines, numbered (parts left out are marked):`,
+            seen.briefing,
+            '',
+            'Decide where that line belongs and call send_upstream_offer with the region to replace.',
+            'Join their deploy buttons if they have any, in whatever shape those take, and otherwise',
+            'add a short One-click Deployment section: a heading and the button, no prose about us.',
+            'Write it the way their README is written, in their language. Nothing is sent until you call it.',
+          ].join('\n'),
+        );
+      } catch (error) {
+        return failure(`Could not read ${code || '(no code)'} upstream: ${error.message.slice(0, 300)}`);
+      }
+    }
+
+    case 'send_upstream_offer': {
+      const code = String(args?.template_code ?? '');
+      const { from, to, text: replacement } = args ?? {};
+      const edit = replacement === undefined && from === undefined && to === undefined
+        ? undefined
+        : { from, to, text: replacement };
+      try {
+        const pr = await openPr(config, { code, edit });
         // Name the redirect when there was one. The manifest's link is where the packaged code came
         // from, which for some templates is a fork of the project, and a reader who was told one
         // repository and sees another in the answer deserves the reason in the same sentence.
@@ -292,7 +339,7 @@ async function callTool(config, name, args, deps) {
           ? ` The manifest names ${pr.declared}, which is a fork, so this went to the project it was forked from.`
           : '';
         return text(
-          `Opened ${pr.url} on ${pr.upstream}, from ${pr.fork} on branch ${pr.branch}.${through} One line in their README, pointing at https://instacloud.com/templates/${code}. It is theirs to accept or refuse.`,
+          `Opened ${pr.url} on ${pr.upstream}, from ${pr.fork} on branch ${pr.branch}.${through} It adds ${pr.added} line(s) and changes ${pr.removed}, pointing at https://instacloud.com/templates/${code}. It is theirs to accept or refuse.`,
         );
       } catch (error) {
         return failure(`Could not offer ${code || '(no code)'} upstream: ${error.message.slice(0, 300)}`);

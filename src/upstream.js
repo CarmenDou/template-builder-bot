@@ -120,34 +120,279 @@ function outsideFences(readme) {
   });
 }
 
+/** A markdown table row, and the rule under a table's header. */
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+const TABLE_RULE = /^\s*\|[\s:|-]+\|\s*$/;
 /**
- * Where the button goes in a README that already has some.
+ * A deploy button: a LINKED IMAGE whose label names a host or says deploy.
  *
- * Beside the badges it is one of, rather than at the top: a repository that
- * carries a row of badges has already decided where these live, and a maintainer
- * reading the diff should see one line join a row, not a new section above their
- * title. Any badge row, not only a row of deploy buttons: laya's is Colab, PyPI,
- * Docs and Hugging Face, and matching on vendor names in the alt text missed it
- * entirely. With no row to join it goes after the first heading, which is where
- * a reader looks first, and with neither it goes at the top.
+ * The whole `[![label](img)](href)` shape is required, not the words on their own.
+ * laya's README has a table comparing "Deployment Mode" against latency, and a
+ * looser test read that as a row of deploy buttons and added a column to it.
  */
-export function withButton(readme, line) {
-  if (readme.includes(line)) return readme;
+const DEPLOY_BADGE = /\[!\[[^\]]*(?:deploy|railway|zeabur|sealos|repocloud|render|heroku|vercel|netlify|koyeb)[^\]]*\]\([^)]*\)\]\([^)]*\)/i;
+
+/** The runs of consecutive badge-only lines, outside fences. */
+function badgeRuns(scanned) {
+  const runs = [];
+  for (let i = 0; i < scanned.length; i += 1) {
+    if (!scanned[i].open || !BADGE_ONLY.test(scanned[i].text)) continue;
+    const start = i;
+    while (i + 1 < scanned.length && scanned[i + 1].open && BADGE_ONLY.test(scanned[i + 1].text)) i += 1;
+    runs.push({ start, end: i });
+  }
+  return runs;
+}
+
+/** A table of deploy buttons: a header, its rule, and a body row carrying a vendor's button. */
+function deployTable(scanned) {
+  for (let i = 0; i + 2 < scanned.length; i += 1) {
+    if (!scanned[i].open || !TABLE_ROW.test(scanned[i].text) || TABLE_RULE.test(scanned[i].text)) continue;
+    if (!TABLE_RULE.test(scanned[i + 1].text)) continue;
+    let end = i + 1;
+    while (end + 1 < scanned.length && scanned[end + 1].open && TABLE_ROW.test(scanned[end + 1].text)) end += 1;
+    const body = scanned.slice(i + 2, end + 1).map((l) => l.text);
+    const carries = body.some((t) => DEPLOY_BADGE.test(t));
+    if (carries) return { header: i, rule: i + 1, bodyStart: i + 2, end };
+  }
+  return null;
+}
+
+/** How much of a README the briefing shows: the opening, and around anything deploy-shaped. */
+const BRIEF_HEAD = 50;
+const BRIEF_PAD = 4;
+const BRIEF_MAX = 200;
+/** A host named in prose, which is how a README that has no buttons still has a deploy section. */
+const VENDOR_WORD = /\b(railway|zeabur|sealos|repocloud|render\.com|heroku|vercel|netlify|koyeb|one-click)\b/i;
+
+/**
+ * The parts of a README worth reading before deciding where a button goes.
+ *
+ * Not the whole file: laya's is 1131 lines and the answer is always near the top
+ * or beside whatever deploy affordance already exists. Numbered from 1, with gaps
+ * marked, so a caller can name a region back.
+ */
+export function readmeBriefing(readme) {
   const scanned = outsideFences(readme);
   const lines = scanned.map((l) => l.text);
-  const find = (test) => scanned.findIndex((l) => l.open && test(l.text));
-
-  const badgeRow = find((t) => BADGE_ONLY.test(t));
-  if (badgeRow >= 0) {
-    // AFTER the row, not inside it. A project that lists Colab, then PyPI, then docs has put them
-    // in an order, and appending is the difference between adding a line and rearranging theirs.
-    let end = badgeRow;
-    while (end + 1 < scanned.length && scanned[end + 1].open && BADGE_ONLY.test(lines[end + 1])) end += 1;
-    return [...lines.slice(0, end + 1), line, ...lines.slice(end + 1)].join('\n');
+  const want = new Set();
+  const add = (a, b) => {
+    for (let i = Math.max(0, a); i <= Math.min(lines.length - 1, b) && want.size < BRIEF_MAX; i += 1) want.add(i);
+  };
+  add(0, BRIEF_HEAD - 1);
+  const t = deployTable(scanned);
+  if (t) add(t.header - BRIEF_PAD, t.end + BRIEF_PAD);
+  for (const r of badgeRuns(scanned)) {
+    if (lines.slice(r.start, r.end + 1).some((x) => DEPLOY_BADGE.test(x))) add(r.start - BRIEF_PAD, r.end + BRIEF_PAD);
   }
-  const heading = find((t) => /^#{1,6}\s/.test(t));
-  const at = heading >= 0 ? heading + 1 : 0;
-  return [...lines.slice(0, at), '', line, ...lines.slice(at)].join('\n');
+  scanned.forEach((l, i) => { if (l.open && VENDOR_WORD.test(l.text)) add(i - BRIEF_PAD, i + BRIEF_PAD); });
+
+  const show = [...want].sort((a, b) => a - b);
+  const width = String(lines.length).length;
+  const out = [];
+  let last = -1;
+  for (const i of show) {
+    if (i !== last + 1) out.push(`${' '.repeat(width)} | ...`);
+    out.push(`${String(i + 1).padStart(width)} | ${lines[i]}`);
+    last = i;
+  }
+  if (last < lines.length - 1) out.push(`${' '.repeat(width)} | ... (${lines.length} lines in all)`);
+  return out.join('\n');
+}
+
+/** Every URL in a piece of text, as a set. */
+const urlsIn = (text) => new Set(String(text ?? '').match(/https?:\/\/[^\s)\]<>"'`]+/g) ?? []);
+
+/**
+ * The one stretch of lines an edit changed, found from both ends.
+ *
+ * Matching by VALUE rather than by position is what a first version did, and a
+ * blank line the edit added made every blank line in the file look edited. Equal
+ * prefixes and suffixes cannot do that, and they carry a second property worth
+ * having: whatever is outside the stretch is identical, byte for byte, so an edit
+ * that touches two distant places is reported as one enormous one and refused.
+ */
+function changedRegion(o, p) {
+  let head = 0;
+  while (head < o.length && head < p.length && o[head] === p[head]) head += 1;
+  let tail = 0;
+  while (tail < o.length - head && tail < p.length - head && o[o.length - 1 - tail] === p[p.length - 1 - tail]) tail += 1;
+  return { removed: o.slice(head, o.length - tail), added: p.slice(head, p.length - tail) };
+}
+
+/** The most lines an edit that adds one button may add or change. */
+const EDIT_MAX_LINES = 14;
+/** How much of the original's length an edit may drop, as a fraction. */
+const EDIT_MIN_KEPT = 0.98;
+
+/**
+ * Refuse an edit that is not the small, additive thing it is supposed to be.
+ *
+ * The text comes from a model, and it is pushed to a repository belonging to
+ * someone who never asked us for anything, so the question is not whether the
+ * model wrote something sensible but whether it can have destroyed anything. Each
+ * check below is about destruction, not taste: taste is why a model writes this
+ * at all, and no check here can or should second-guess it.
+ */
+export function verifyEdit(original, proposed, line) {
+  const ours = urlsIn(line);
+  const target = [...ours].find((u) => u.includes('/templates/'));
+  const has = (text, url) => text.split(url).length - 1;
+
+  if (target && has(original, target)) throw new UpstreamError('That README already links to this template.');
+  if (!target || has(proposed, target) !== 1) {
+    throw new UpstreamError(`The edit has to add the button exactly once, and it appears ${target ? has(proposed, target) : 0} time(s).`);
+  }
+
+  const before = urlsIn(original);
+  const gone = [...before].filter((u) => !proposed.includes(u));
+  if (gone.length) throw new UpstreamError(`The edit drops ${gone.length} link(s) the README had, starting with ${gone[0]}.`);
+
+  if (proposed.length < Math.floor(original.length * EDIT_MIN_KEPT)) {
+    throw new UpstreamError(`The edit is ${original.length - proposed.length} characters shorter than the README it edits, so something was cut rather than added.`);
+  }
+
+  const { added, removed } = changedRegion(original.split('\n'), proposed.split('\n'));
+  if (added.length + removed.length > EDIT_MAX_LINES) {
+    throw new UpstreamError(`The edit changes ${added.length + removed.length} lines, and adding one button should change at most ${EDIT_MAX_LINES}. An edit in two separate places counts as everything between them.`);
+  }
+
+  // It may not bring in links of its own. Ours, or ones the README already had.
+  const foreign = [...urlsIn(added.join('\n'))].filter((u) => !before.has(u) && !ours.has(u));
+  if (foreign.length) throw new UpstreamError(`The edit adds ${foreign.length} link(s) that are neither ours nor already in the README: ${foreign.slice(0, 2).join(', ')}.`);
+
+  return { added: added.length, removed: removed.length };
+}
+
+/**
+ * Replace one region of a README, and nothing outside it.
+ *
+ * The region is named by a caller and the splice is done here, so an edit cannot
+ * reach past the lines it asked for however the replacement text is written.
+ * `from` and `to` count from 1 and both ends are included, the way the briefing
+ * numbers them.
+ */
+export function spliceRegion(readme, from, to, text) {
+  const lines = readme.split('\n');
+  const ok = (n) => Number.isInteger(n) && n >= 1 && n <= lines.length;
+  if (!ok(from) || !ok(to) || to < from) {
+    throw new UpstreamError(`from and to have to be lines between 1 and ${lines.length}, with to at or after from. Got ${JSON.stringify(from)} and ${JSON.stringify(to)}.`);
+  }
+  return [...lines.slice(0, from - 1), ...String(text ?? '').split('\n'), ...lines.slice(to)].join('\n');
+}
+
+/**
+ * What a README offers as somewhere to put the button, for a caller that has to
+ * choose between them.
+ *
+ * Reported rather than decided, because the choice is a judgement and the shapes
+ * are not: a table of deploy buttons wants a column, a row of badges wants one
+ * more badge, and a README with neither wants a section of its own rather than a
+ * button wedged under whatever heading happens to be first.
+ */
+export function readmePlaces(readme) {
+  const scanned = outsideFences(readme);
+  const heading = scanned.findIndex((l) => l.open && /^#{1,6}\s/.test(l.text));
+  return {
+    table: deployTable(scanned),
+    badges: badgeRuns(scanned),
+    heading: heading >= 0 ? heading : null,
+    lines: scanned.length,
+  };
+}
+
+/** Append one cell to a table row, keeping whatever trailing whitespace it had. */
+const withCell = (row, cell) => row.replace(/\|(\s*)$/, `| ${cell} |$1`);
+
+/**
+ * The button written into a README at a chosen place.
+ *
+ * The CALLER chooses where, out of what readmePlaces reported, and this writes
+ * what goes there. Nothing a caller passes becomes text in the file: the mode
+ * picks a shape and the line says which one of that shape, so the worst a wrong
+ * choice can do is put the right line somewhere odd, never put something else in
+ * someone's README.
+ */
+export function placeButton(readme, line, placement = {}) {
+  if (readme.includes(line)) return readme;
+  const { mode = 'auto', line: at } = placement;
+  const scanned = outsideFences(readme);
+  const lines = scanned.map((l) => l.text);
+  const insert = (i, ...text) => [...lines.slice(0, i), ...text, ...lines.slice(i)].join('\n');
+  // A block goes in with exactly one blank line on each side, however many were already there.
+  // Without the trailing one the heading below runs straight into the button and the two render
+  // as one paragraph; with an unconditional leading one, a README that already ends its section
+  // with a blank gets two.
+  const block = (i, ...text) => insert(
+    i,
+    ...(i > 0 && lines[i - 1].trim() !== '' ? [''] : []),
+    ...text,
+    ...(lines[i] !== undefined && lines[i].trim() !== '' ? [''] : []),
+  );
+  const needs = (n) => {
+    if (!Number.isInteger(n) || n < 1 || n > lines.length) {
+      throw new UpstreamError(`${mode} needs a line between 1 and ${lines.length}, not ${JSON.stringify(at)}.`);
+    }
+    return n - 1; // the caller counts from 1, the way readmePlaces reports
+  };
+
+  if (mode === 'table-column') {
+    const t = deployTable(scanned);
+    if (!t) throw new UpstreamError('There is no table of deploy buttons in this README to add a column to.');
+    const out = [...lines];
+    out[t.header] = withCell(out[t.header], 'InstaCloud');
+    out[t.rule] = withCell(out[t.rule], '---');
+    // The button goes in the first body row, which is where the other buttons are. Any row below
+    // it gets an empty cell, because a table with a short row renders as a broken one.
+    for (let i = t.bodyStart; i <= t.end; i += 1) out[i] = withCell(out[i], i === t.bodyStart ? line : '');
+    return out.join('\n');
+  }
+
+  if (mode === 'badge-row') {
+    const runs = badgeRuns(scanned);
+    const want = at === undefined ? runs[0] : runs.find((r) => at - 1 >= r.start && at - 1 <= r.end);
+    if (!want) throw new UpstreamError(`No row of badges at line ${at ?? '(none given)'} in this README.`);
+    return insert(want.end + 1, line);
+  }
+
+  if (mode === 'new-section') {
+    const i = at === undefined ? 0 : needs(at);
+    // Heading and button, nothing else. A paragraph explaining our product in someone else's
+    // README is the thing a maintainer would have to edit or delete.
+    return block(i, '## One-click Deployment', '', line);
+  }
+
+  if (mode === 'after-line') return block(needs(at) + 1, line);
+
+  if (mode !== 'auto') throw new UpstreamError(`No such placement: ${mode}.`);
+
+  // Where a project already put the others, or a section of our own. Those are the only two
+  // answers: joining a row of Colab, PyPI and docs badges is not "where the deploy buttons live",
+  // it is the middle of somebody's links, which is what laya's first offer looked like.
+  if (deployTable(scanned)) return placeButton(readme, line, { mode: 'table-column' });
+  const vendorRun = badgeRuns(scanned).find((r) => lines.slice(r.start, r.end + 1).some((t) => DEPLOY_BADGE.test(t)));
+  if (vendorRun) return insert(vendorRun.end + 1, line);
+  return block(sectionAt(scanned), '## One-click Deployment', '', line);
+}
+
+/**
+ * Where a section of our own goes: at the end of whatever opens the README, just
+ * before its first real section.
+ *
+ * A reader meets the pitch, then the ways to run it, which is where a one-click
+ * deploy belongs. Above the title it would be the first thing in someone else's
+ * project, and at the bottom nobody would find it.
+ */
+function sectionAt(scanned) {
+  const sub = scanned.findIndex((l) => l.open && /^#{2,6}\s/.test(l.text));
+  if (sub > 0) return sub;
+  const first = scanned.findIndex((l) => l.open && /^#{1,6}\s/.test(l.text));
+  return first >= 0 ? first + 1 : scanned.length;
+}
+
+/** Where the button goes when nobody chose. See `auto` in placeButton. */
+export function withButton(readme, line) {
+  return placeButton(readme, line, { mode: 'auto' });
 }
 
 function gh(token, fetchImpl) {
@@ -264,7 +509,7 @@ export function offerText(template) {
  * and a second call with the same branch name fails at the branch rather than
  * opening a duplicate pull request.
  */
-export async function openUpstreamPr(config, { code }, deps = {}) {
+export async function openUpstreamPr(config, { code, edit, preview }, deps = {}) {
   const { fetchImpl = fetch, wait = sleep } = deps;
   if (!config.githubPrToken) {
     // Names BOTH places, because there are two and the obvious one is not enough. Setting the
@@ -331,10 +576,32 @@ export async function openUpstreamPr(config, { code }, deps = {}) {
     throw new UpstreamError(`${owner}/${repo} has no README.md at its root, so there is nowhere to put the button.`);
   }
   const current = Buffer.from(file.content, 'base64').toString('utf8');
-  const updated = withButton(current, line);
-  if (updated === current) {
+  if (current.includes(line)) {
     throw new UpstreamError(`${owner}/${repo}'s README already carries this button. Nothing to offer.`);
   }
+
+  // The look before the leap. Answering here rather than from a second tool keeps one resolution
+  // path: what this reports is the repository and the text the send would act on, not a second
+  // guess at them.
+  if (preview) {
+    return {
+      preview: true,
+      upstream: `${owner}/${repo}`,
+      declared,
+      line,
+      lines: current.split('\n').length,
+      briefing: readmeBriefing(current),
+    };
+  }
+
+  // The caller's own text when it named a region, and the built-in placement otherwise. Either way
+  // the splice happens here and verifyEdit runs on the result, so a written edit cannot reach past
+  // the lines it asked for and neither one can push something that is not a small addition.
+  const updated = edit
+    ? spliceRegion(current, edit.from, edit.to, edit.text)
+    : withButton(current, line);
+  if (updated === current) throw new UpstreamError('That edit changes nothing.');
+  const checked = verifyEdit(current, updated, line);
 
   await call('POST', `/repos/${owner}/${repo}/forks`, {});
   // The fork is created asynchronously, and reading it too early 404s.
@@ -349,20 +616,47 @@ export async function openUpstreamPr(config, { code }, deps = {}) {
   if (!fork) throw new UpstreamError(`The fork of ${owner}/${repo} did not appear in time. Try again.`);
 
   const branch = 'instacloud-deploy-button';
-  await call('POST', `/repos/${me}/${repo}/git/refs`, { ref: `refs/heads/${branch}`, sha: baseSha });
+  // Created, or reset to the base it should be on. The second is what makes a second call a
+  // REVISION: the branch goes back to upstream's current head and the write below replaces the
+  // commit, so an offer that landed in the wrong place is corrected in the pull request that is
+  // already open rather than by closing it and sending them another.
+  try {
+    await call('POST', `/repos/${me}/${repo}/git/refs`, { ref: `refs/heads/${branch}`, sha: baseSha });
+  } catch {
+    await call('PATCH', `/repos/${me}/${repo}/git/refs/heads/${branch}`, { sha: baseSha, force: true });
+  }
   await call('PUT', `/repos/${me}/${repo}/contents/README.md`, {
     message: 'Add a Deploy on InstaCloud button',
     content: b64(updated),
+    // The branch now sits exactly on baseSha, so their README at that commit is what is being
+    // replaced, whatever an older attempt left here.
     sha: file.sha,
     branch,
   });
 
-  const pr = await call('POST', `/repos/${owner}/${repo}/pulls`, {
-    title,
-    body,
-    head: `${me}:${branch}`,
-    base,
-    maintainer_can_modify: true,
-  });
-  return { url: pr.html_url, number: pr.number, upstream: `${owner}/${repo}`, declared, fork: `${me}/${repo}`, branch };
+  let pr;
+  try {
+    pr = await call('POST', `/repos/${owner}/${repo}/pulls`, {
+      title,
+      body,
+      head: `${me}:${branch}`,
+      base,
+      maintainer_can_modify: true,
+    });
+  } catch (error) {
+    // GitHub refuses a second pull request from the same branch, which on a revision is the right
+    // answer: the one that exists has just been updated by the push above.
+    const open = await call('GET', `/repos/${owner}/${repo}/pulls?head=${me}:${branch}&state=open`);
+    pr = Array.isArray(open) ? open[0] : null;
+    if (!pr) throw error;
+  }
+  return {
+    url: pr.html_url,
+    number: pr.number,
+    upstream: `${owner}/${repo}`,
+    declared,
+    fork: `${me}/${repo}`,
+    branch,
+    ...checked,
+  };
 }
