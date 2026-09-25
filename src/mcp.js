@@ -1,4 +1,4 @@
-import { startJob, readJob, jobFeed, readUpstreamOffer, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
+import { startJob, readJob, jobFeed, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
 import { askForReview, reviewStatus } from './review.js';
 import { openUpstreamPr } from './upstream.js';
 
@@ -122,11 +122,11 @@ const TOOLS = [
   {
     name: 'offer_template_upstream',
     description:
-      "Open a pull request on the ORIGINAL project's repository, adding the insta.template.yaml the job wrote plus one Deploy on InstaCloud line in their README, so anyone reading their page can deploy it. Only when a person has read what the job prepared and said to send it: this reaches a repository that is not ours and cannot be taken back, and it is opened under the account whose credential this holds. Never because a job finished. The job must have prepared the offer first; read_job says whether it did.",
+      "Open a pull request on the ORIGINAL project's repository adding ONE line to their README: a Deploy on InstaCloud button linking to the template's gallery page. Nothing else, and nothing for them to maintain, because the template lives in our registry. Takes the template's code and derives everything else from it: the code must already be PUBLISHED (a button pointing at a page that does not exist yet is the one way this becomes rude), and the project it goes to comes from that template's own manifest, never from a caller. Only when a person has said to send it: this reaches a repository that is not ours, cannot be taken back, and is opened under the account whose credential this holds. Never because a job finished or a template published.",
     inputSchema: {
       type: 'object',
-      properties: { job_id: { type: 'string' } },
-      required: ['job_id'],
+      properties: { template_code: { type: 'string' } },
+      required: ['template_code'],
     },
   },
   {
@@ -154,7 +154,6 @@ async function callTool(config, name, args, deps) {
     running = listRunningJobs,
     review = askForReview,
     reviews = reviewStatus,
-    offer = readUpstreamOffer,
     openPr = openUpstreamPr,
   } = deps;
 
@@ -280,31 +279,17 @@ async function callTool(config, name, args, deps) {
     }
 
     case 'offer_template_upstream': {
-      const jobId = String(args?.job_id ?? '');
-      const job = await read(config, jobId);
-      // The repository the job was started on is the only one this can reach: the credential is
-      // broad, so what it may be pointed at comes from the job's own record, never from a caller.
-      if (!/^https:\/\/github\.com\//.test(job.url ?? '')) {
-        return failure(`Job ${jobId} was not started from a GitHub repository, so there is nothing to offer back.`);
-      }
-      let prepared;
+      const code = String(args?.template_code ?? '');
+      // The code is the ONLY input, and every other value is derived from it: the catalog says
+      // whether it is published, and its own manifest names the project. The credential is broad,
+      // so nothing a caller writes may decide which repository gets written to.
       try {
-        prepared = await offer(config, jobId);
-      } catch (error) {
-        return failure(`Could not read what ${jobId} prepared: ${error.message.slice(0, 160)}`);
-      }
-      if (!prepared.manifest) {
-        return failure(
-          `Job ${jobId} prepared no upstream offer. Ask it to write one into its own upstream/ directory first, with steer_job.`,
-        );
-      }
-      try {
-        const pr = await openPr(config, { repoUrl: job.url, ...prepared });
+        const pr = await openPr(config, { code });
         return text(
-          `Opened ${pr.url} on ${job.url}, from ${pr.fork} on branch ${pr.branch}. It is theirs to accept or refuse.`,
+          `Opened ${pr.url} on ${pr.upstream}, from ${pr.fork} on branch ${pr.branch}. One line in their README, pointing at https://instacloud.com/templates/${code}. It is theirs to accept or refuse.`,
         );
       } catch (error) {
-        return failure(`Could not open the pull request: ${error.message.slice(0, 300)}`);
+        return failure(`Could not offer ${code || '(no code)'} upstream: ${error.message.slice(0, 300)}`);
       }
     }
 

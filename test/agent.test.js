@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newJobId, buildTask, buildFollowupTask, buildResumePrompt, parseResult, startJob, readJob, jobFeed, readUpstreamOffer, stageInstructions } from '../src/agent.js';
+import { newJobId, buildTask, buildFollowupTask, buildResumePrompt, parseResult, startJob, readJob, jobFeed, stageInstructions } from '../src/agent.js';
 
 const config = {
   instaBin: 'insta',
@@ -335,60 +335,3 @@ test('the runner lets a job load skills', async () => {
   assert.match(runner, /--allowedTools 'Skill' /);
 });
 
-test('a job is asked to prepare an offer for the project it was built from', () => {
-  const url = 'https://github.com/louislam/uptime-kuma';
-  const task = buildTask({ url, dir: '/data/work/jobs/J1' });
-  // Prepared as files, never sent: the credential that could send it is not on the box.
-  assert.match(task, /\/data\/work\/jobs\/J1\/upstream\//);
-  for (const file of ['manifest.txt', 'readme-line.txt', 'pr-title.txt', 'pr-body.txt']) {
-    assert.match(task, new RegExp(file.replace(".", "\\.")), file);
-  }
-  assert.match(task, /Nothing is sent/);
-  // The button deploys from THEIR repository, not from our registry.
-  assert.match(task, new RegExp(`deploy\\?repo=${url.replace(/[/.]/g, "\\$&")}`));
-  assert.doesNotMatch(task, /console\.instacloud\.com\/templates\//);
-  // And the RESULT says whether it prepared one, so nobody has to go looking.
-  assert.match(task, /offer: <prepared \| none/);
-});
-
-test('a follow-up on an existing PR is not asked to prepare an offer', () => {
-  // It never saw the upstream repository: it was given a PR number.
-  assert.doesNotMatch(buildFollowupTask({ pr: 149, extra: 'x', dir: '/data/work/jobs/J1' }), /upstream\//);
-});
-
-test('readUpstreamOffer reads the four files, and nothing else, off the box', async () => {
-  let script = '';
-  const run = async (_c, s) => (
-    (script = s),
-    {
-      stdout: [
-        '---MANIFEST---', 'code: kuma', '---README-LINE---', '[![x](y)](z)',
-        '---PR-TITLE---', 'Add a deploy button', '---PR-BODY---', 'Two files.', '',
-      ].join('\n'),
-    }
-  );
-  const out = await readUpstreamOffer({}, 'J1', { run });
-  assert.deepEqual(out, {
-    manifest: 'code: kuma',
-    readmeLine: '[![x](y)](z)',
-    title: 'Add a deploy button',
-    body: 'Two files.',
-  });
-  assert.match(script, /cat \/data\/work\/jobs\/J1\/upstream\/manifest\.txt/);
-  // A redirect of stderr is not a write; a redirect into a file, or a remover, would be.
-  assert.doesNotMatch(script, /\brm\b|>\s*\/data|printf|tee /, 'reading an offer never writes');
-});
-
-test('readUpstreamOffer reads a job that prepared nothing as empty, not as a crash', async () => {
-  const run = async () => ({ stdout: '---MANIFEST---\n---README-LINE---\n---PR-TITLE---\n---PR-BODY---\n' });
-  assert.deepEqual(await readUpstreamOffer({}, 'J1', { run }), {
-    manifest: '', readmeLine: '', title: '', body: '',
-  });
-});
-
-test('readUpstreamOffer refuses a job id that is not one', async () => {
-  await assert.rejects(
-    () => readUpstreamOffer({}, 'J1; rm -rf /', { run: async () => assert.fail('must not run') }),
-    /not a job id/,
-  );
-});

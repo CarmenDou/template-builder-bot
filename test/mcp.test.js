@@ -290,59 +290,65 @@ test('a quiet look says nothing, so a short wait does not turn into chatter', ()
   assert.match(d, /about 20 seconds/);
 });
 
-test('offering upstream can only reach the repository the job itself names', async () => {
-  // The credential behind this is broad, so what it may be pointed at comes from the job's own
-  // record. A caller naming another repository has nowhere to put it: there is no such argument.
+test('offering upstream takes a template code and nothing a caller could aim', async () => {
+  // The credential behind this is broad, so nothing a caller writes may decide which repository
+  // gets written to. The code is the only argument, and everything else is derived from it: the
+  // catalog says whether it is published, its manifest says whose project it is.
   const tool = TOOLS.find((t) => t.name === 'offer_template_upstream');
-  assert.deepEqual(Object.keys(tool.inputSchema.properties), ['job_id']);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties), ['template_code']);
 
-  let sentTo = null;
-  await call(
+  let sent = null;
+  const res = await call(
     'offer_template_upstream',
-    { job_id: 'J1' },
+    { template_code: 'uptime-kuma', repo_url: 'https://github.com/someone/else' },
     {
-      read: async () => ({ url: 'https://github.com/louislam/uptime-kuma', stages: [], steps: [] }),
-      offer: async () => ({ manifest: 'code: x\n', readmeLine: '[![x](y)](z)', title: 't', body: 'b' }),
       openPr: async (_c, input) => {
-        sentTo = input.repoUrl;
-        return { url: 'https://github.com/louislam/uptime-kuma/pull/9', number: 9, fork: 'CarmenDou/uptime-kuma', branch: 'b' };
+        sent = input;
+        return {
+          url: 'https://github.com/louislam/uptime-kuma/pull/9',
+          number: 9,
+          upstream: 'louislam/uptime-kuma',
+          fork: 'CarmenDou/uptime-kuma',
+          branch: 'instacloud-deploy-button',
+        };
       },
     },
   );
-  assert.equal(sentTo, 'https://github.com/louislam/uptime-kuma');
+  assert.deepEqual(sent, { code: 'uptime-kuma' }, 'the extra argument is not passed through');
+  assert.match(res.result.content[0].text, /louislam\/uptime-kuma/);
+  assert.match(res.result.content[0].text, /instacloud\.com\/templates\/uptime-kuma/);
 });
 
-test('a job that came from a PR number, not a repository, has nothing to offer back', async () => {
+test('a refusal from the gate is reported as one, not as a success', async () => {
   const res = await call(
     'offer_template_upstream',
-    { job_id: 'J1' },
+    { template_code: 'openclaw' },
     {
-      read: async () => ({ url: 'PR #149', stages: [], steps: [] }),
-      offer: async () => assert.fail('must not read an offer'),
-      openPr: async () => assert.fail('must not open anything'),
+      openPr: async () => {
+        throw new Error('openclaw is not published, so https://instacloud.com/templates/openclaw does not exist');
+      },
     },
   );
   assert.equal(res.result.isError, true);
-  assert.match(res.result.content[0].text, /not started from a GitHub repository/);
+  assert.match(res.result.content[0].text, /not published/);
+  assert.match(res.result.content[0].text, /openclaw/);
 });
 
-test('a job that prepared nothing is refused, and told how to prepare it', async () => {
-  const res = await call(
-    'offer_template_upstream',
-    { job_id: 'J1' },
-    {
-      read: async () => ({ url: 'https://github.com/o/r', stages: [], steps: [] }),
-      offer: async () => ({ manifest: '', readmeLine: '', title: '', body: '' }),
-      openPr: async () => assert.fail('must not open anything'),
-    },
-  );
+test('a missing code is refused by name rather than reported as "(no code)" work done', async () => {
+  const res = await call('offer_template_upstream', {}, {
+    openPr: async () => { throw new Error("'' is not a template code."); },
+  });
   assert.equal(res.result.isError, true);
-  assert.match(res.result.content[0].text, /prepared no upstream offer.*steer_job/s);
+  assert.match(res.result.content[0].text, /\(no code\)/);
 });
 
-test('offering upstream says it is outward and needs a person to have said so', () => {
+test('offering upstream says it is outward, needs a person, and needs the template published', () => {
   const d = TOOLS.find((t) => t.name === 'offer_template_upstream').description;
-  assert.match(d, /Only when a person has read what the job prepared and said to send it/);
+  assert.match(d, /Only when a person has said to send it/);
   assert.match(d, /cannot be taken back/);
-  assert.match(d, /Never because a job finished/);
+  assert.match(d, /Never because a job finished or a template published/);
+  // The gate and the derivation, both stated where the caller reads them.
+  assert.match(d, /must already be PUBLISHED/);
+  assert.match(d, /never from a caller/);
+  assert.match(d, /ONE line/);
 });
