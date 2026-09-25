@@ -29,6 +29,12 @@ export function loadConfig(env = process.env, { needsSlack = true } = {}) {
     slackReviewBotIds: parseList(env.SLACK_REVIEW_BOT_IDS ?? ''),
     slackApproveBotIds: parseList(env.SLACK_CLAUDE_BOT_ID ?? ''),
 
+    // Opening a pull request on a repository nobody here owns needs a classic token with
+    // public_repo, which fine-grained tokens cannot do. It is deliberately NOT on the agent box:
+    // that scope can write to every public repository its owner can, and the box runs whatever a
+    // job decides to. Absent, offer_template_upstream refuses and says so.
+    githubPrToken: env.GITHUB_PR_TOKEN,
+
     // How the bot reaches the agent box
     instaApiKey: env.INSTA_API_KEY,
     instaBin: env.INSTA_BIN ?? 'insta',

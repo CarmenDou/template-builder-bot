@@ -23,6 +23,7 @@ test('every tool says what it is for, and none of them can delete', () => {
     'continue_template_pr',
     'follow_job',
     'list_running_jobs',
+    'offer_template_upstream',
     'read_job',
     'review_status',
     'start_template_job',
@@ -30,7 +31,7 @@ test('every tool says what it is for, and none of them can delete', () => {
     'stop_job',
   ]);
   // The box holds a platform key for the whole org. Nothing here may reach it:
-  // a caller can only do these nine things, whatever it is asked to do.
+  // a caller can only do these ten things, whatever it is asked to do.
   const surface = JSON.stringify(TOOLS);
   assert.ok(!/delete|remove|destroy/i.test(surface), 'no destructive verb is offered');
   for (const t of TOOLS) assert.ok(t.description.length > 60, `${t.name} explains itself`);
@@ -287,4 +288,67 @@ test('a quiet look says nothing, so a short wait does not turn into chatter', ()
   const d = TOOLS.find((t) => t.name === 'follow_job').description;
   assert.match(d, /when it shows nothing new, say nothing and call again/);
   assert.match(d, /about 20 seconds/);
+});
+
+test('offering upstream takes a template code and nothing a caller could aim', async () => {
+  // The credential behind this is broad, so nothing a caller writes may decide which repository
+  // gets written to. The code is the only argument, and everything else is derived from it: the
+  // catalog says whether it is published, its manifest says whose project it is.
+  const tool = TOOLS.find((t) => t.name === 'offer_template_upstream');
+  assert.deepEqual(Object.keys(tool.inputSchema.properties), ['template_code']);
+
+  let sent = null;
+  const res = await call(
+    'offer_template_upstream',
+    { template_code: 'uptime-kuma', repo_url: 'https://github.com/someone/else' },
+    {
+      openPr: async (_c, input) => {
+        sent = input;
+        return {
+          url: 'https://github.com/louislam/uptime-kuma/pull/9',
+          number: 9,
+          upstream: 'louislam/uptime-kuma',
+          fork: 'CarmenDou/uptime-kuma',
+          branch: 'instacloud-deploy-button',
+        };
+      },
+    },
+  );
+  assert.deepEqual(sent, { code: 'uptime-kuma' }, 'the extra argument is not passed through');
+  assert.match(res.result.content[0].text, /louislam\/uptime-kuma/);
+  assert.match(res.result.content[0].text, /instacloud\.com\/templates\/uptime-kuma/);
+});
+
+test('a refusal from the gate is reported as one, not as a success', async () => {
+  const res = await call(
+    'offer_template_upstream',
+    { template_code: 'openclaw' },
+    {
+      openPr: async () => {
+        throw new Error('openclaw is not published, so https://instacloud.com/templates/openclaw does not exist');
+      },
+    },
+  );
+  assert.equal(res.result.isError, true);
+  assert.match(res.result.content[0].text, /not published/);
+  assert.match(res.result.content[0].text, /openclaw/);
+});
+
+test('a missing code is refused by name rather than reported as "(no code)" work done', async () => {
+  const res = await call('offer_template_upstream', {}, {
+    openPr: async () => { throw new Error("'' is not a template code."); },
+  });
+  assert.equal(res.result.isError, true);
+  assert.match(res.result.content[0].text, /\(no code\)/);
+});
+
+test('offering upstream says it is outward, needs a person, and needs the template published', () => {
+  const d = TOOLS.find((t) => t.name === 'offer_template_upstream').description;
+  assert.match(d, /Only when a person has said to send it/);
+  assert.match(d, /cannot be taken back/);
+  assert.match(d, /Never because a job finished or a template published/);
+  // The gate and the derivation, both stated where the caller reads them.
+  assert.match(d, /must already be PUBLISHED/);
+  assert.match(d, /never from a caller/);
+  assert.match(d, /ONE line/);
 });

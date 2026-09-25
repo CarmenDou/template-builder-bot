@@ -334,3 +334,4 @@ test('the runner lets a job load skills', async () => {
   const runner = Buffer.from(script.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \S+run\.sh/)[1], 'base64').toString();
   assert.match(runner, /--allowedTools 'Skill' /);
 });
+

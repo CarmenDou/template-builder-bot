@@ -1,5 +1,6 @@
 import { startJob, readJob, jobFeed, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
 import { askForReview, reviewStatus } from './review.js';
+import { openUpstreamPr } from './upstream.js';
 
 // The job-control layer, offered to a conversational agent as MCP tools.
 //
@@ -119,6 +120,16 @@ const TOOLS = [
     },
   },
   {
+    name: 'offer_template_upstream',
+    description:
+      "Open a pull request on the ORIGINAL project's repository adding ONE line to their README: a Deploy on InstaCloud button linking to the template's gallery page. Nothing else, and nothing for them to maintain, because the template lives in our registry. Takes the template's code and derives everything else from it: the code must already be PUBLISHED (a button pointing at a page that does not exist yet is the one way this becomes rude), and the project it goes to comes from that template's own manifest, never from a caller. Only when a person has said to send it: this reaches a repository that is not ours, cannot be taken back, and is opened under the account whose credential this holds. Never because a job finished or a template published.",
+    inputSchema: {
+      type: 'object',
+      properties: { template_code: { type: 'string' } },
+      required: ['template_code'],
+    },
+  },
+  {
     name: 'stop_job',
     description:
       'End a job. Anything it already pushed stays pushed and nothing is reverted, so this abandons rather than undoes. Steering is almost always the better answer; stop only when the work should not continue at all.',
@@ -143,6 +154,7 @@ async function callTool(config, name, args, deps) {
     running = listRunningJobs,
     review = askForReview,
     reviews = reviewStatus,
+    openPr = openUpstreamPr,
   } = deps;
 
   // The job never posts anywhere itself. Whoever started it follows it and does
@@ -264,6 +276,21 @@ async function callTool(config, name, args, deps) {
       });
       const heading = args?.after ? `${r.activity.length} new since ${args.after}:` : 'Most recent:';
       return text(`${heading}\n\n${blocks.join('\n\n')}`);
+    }
+
+    case 'offer_template_upstream': {
+      const code = String(args?.template_code ?? '');
+      // The code is the ONLY input, and every other value is derived from it: the catalog says
+      // whether it is published, and its own manifest names the project. The credential is broad,
+      // so nothing a caller writes may decide which repository gets written to.
+      try {
+        const pr = await openPr(config, { code });
+        return text(
+          `Opened ${pr.url} on ${pr.upstream}, from ${pr.fork} on branch ${pr.branch}. One line in their README, pointing at https://instacloud.com/templates/${code}. It is theirs to accept or refuse.`,
+        );
+      } catch (error) {
+        return failure(`Could not offer ${code || '(no code)'} upstream: ${error.message.slice(0, 300)}`);
+      }
     }
 
     case 'stop_job':
