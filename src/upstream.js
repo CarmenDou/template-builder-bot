@@ -95,21 +95,57 @@ export function upstreamLink(manifest) {
   return '';
 }
 
+/** A line that is nothing but badges: one or more linked images, and whitespace. */
+const BADGE_ONLY = /^\s*(?:\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)\s*)+$/;
+/** The fence that opens or closes a code block, at most three spaces in, any length. */
+const FENCE = /^ {0,3}(```|~~~)/;
+
+/**
+ * Every line of a README paired with whether it is inside a fenced code block.
+ *
+ * Needed because both of the things this looks for have a twin inside a code
+ * block that means something else. `# something` in a shell or Python sample is
+ * a comment, not a heading, and laya's README has one 700 lines down: placing
+ * the button there put it inside the sample.
+ */
+function outsideFences(readme) {
+  let fence = null;
+  return readme.split('\n').map((text) => {
+    const m = FENCE.exec(text);
+    if (m && (fence === null || text.trimStart().startsWith(fence))) {
+      fence = fence === null ? m[1] : null;
+      return { text, open: false };
+    }
+    return { text, open: fence === null };
+  });
+}
+
 /**
  * Where the button goes in a README that already has some.
  *
  * Beside the badges it is one of, rather than at the top: a repository that
- * carries Deploy on Railway or Deploy to Render has already decided where these
- * live, and a maintainer reading the diff should see one line join a row, not a
- * new section above their title. With no row to join it goes after the first
- * heading, which is where a reader looks first.
+ * carries a row of badges has already decided where these live, and a maintainer
+ * reading the diff should see one line join a row, not a new section above their
+ * title. Any badge row, not only a row of deploy buttons: laya's is Colab, PyPI,
+ * Docs and Hugging Face, and matching on vendor names in the alt text missed it
+ * entirely. With no row to join it goes after the first heading, which is where
+ * a reader looks first, and with neither it goes at the top.
  */
 export function withButton(readme, line) {
   if (readme.includes(line)) return readme;
-  const lines = readme.split('\n');
-  const badgeRow = lines.findIndex((l) => /\[!\[[^\]]*(deploy|railway|render|heroku|vercel|netlify)/i.test(l));
-  if (badgeRow >= 0) return [...lines.slice(0, badgeRow + 1), line, ...lines.slice(badgeRow + 1)].join('\n');
-  const heading = lines.findIndex((l) => /^#\s/.test(l));
+  const scanned = outsideFences(readme);
+  const lines = scanned.map((l) => l.text);
+  const find = (test) => scanned.findIndex((l) => l.open && test(l.text));
+
+  const badgeRow = find((t) => BADGE_ONLY.test(t));
+  if (badgeRow >= 0) {
+    // AFTER the row, not inside it. A project that lists Colab, then PyPI, then docs has put them
+    // in an order, and appending is the difference between adding a line and rearranging theirs.
+    let end = badgeRow;
+    while (end + 1 < scanned.length && scanned[end + 1].open && BADGE_ONLY.test(lines[end + 1])) end += 1;
+    return [...lines.slice(0, end + 1), line, ...lines.slice(end + 1)].join('\n');
+  }
+  const heading = find((t) => /^#{1,6}\s/.test(t));
   const at = heading >= 0 ? heading + 1 : 0;
   return [...lines.slice(0, at), '', line, ...lines.slice(at)].join('\n');
 }
@@ -245,17 +281,41 @@ export async function openUpstreamPr(config, { code }, deps = {}) {
   }
   // Published first, and before the fork: every write below is on someone else's
   // account, and none of it should happen for a template with no page to link to.
-  const { template, owner, repo, line } = await upstreamOffer(code, deps);
+  const offer = await upstreamOffer(code, deps);
+  const { template, line } = offer;
+  // Reassigned below when the manifest's link turns out to be a fork.
+  let { owner, repo } = offer;
   const { title, body } = offerText(template);
   const call = gh(config.githubPrToken, fetchImpl);
 
   const me = (await call('GET', '/user')).login;
+
+  // Through a fork to the project itself.
+  //
+  // `meta.links.upstream` records where the packaged code came from, and for some templates that
+  // is a FORK: laya's manifest points at tonychang04/laya-template because the image bakes that
+  // fork's deploy/app.py at a pinned commit. Correct for what the field is for, and the wrong
+  // place to send this: the fork's owner is one of us, so the offer would go to ourselves while
+  // the project it belongs to never hears about it. GitHub's `source` is the root of the fork
+  // network, which is the project a reader of that README would say they are looking at.
+  //
+  // The manifest is left alone on purpose, since the gallery renders that same link as "where this
+  // came from" and that answer is still the fork.
+  let target = await call('GET', `/repos/${owner}/${repo}`);
+  const declared = `${owner}/${repo}`;
+  if (target.fork) {
+    const root = target.source?.full_name ?? target.parent?.full_name;
+    if (!root) throw new UpstreamError(`${declared} is a fork, but GitHub names no project it was forked from.`);
+    ({ owner, repo } = parseRepo(`https://github.com/${root}`));
+    target = await call('GET', `/repos/${owner}/${repo}`);
+  }
+  // After the redirect, never before: the fork this would be pointed through may be ours even when
+  // the project on the far side is not.
   if (me.toLowerCase() === owner.toLowerCase()) {
     throw new UpstreamError(`${owner}/${repo} belongs to the account this would fork it into.`);
   }
 
-  const upstream = await call('GET', `/repos/${owner}/${repo}`);
-  const base = upstream.default_branch;
+  const base = target.default_branch;
   // Branch from UPSTREAM's head, not the fork's: a fork made long ago sits on an old commit.
   const baseSha = (await call('GET', `/repos/${owner}/${repo}/git/ref/heads/${base}`)).object.sha;
 
@@ -304,5 +364,5 @@ export async function openUpstreamPr(config, { code }, deps = {}) {
     base,
     maintainer_can_modify: true,
   });
-  return { url: pr.html_url, number: pr.number, upstream: `${owner}/${repo}`, fork: `${me}/${repo}`, branch };
+  return { url: pr.html_url, number: pr.number, upstream: `${owner}/${repo}`, declared, fork: `${me}/${repo}`, branch };
 }

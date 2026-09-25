@@ -80,6 +80,12 @@ Before calling it, say plainly that this opens a pull request on a repository th
 under Carmen's GitHub account, and cannot be taken back. Only when they say to send it. Never
 because a job finished, never because a template published, and never on your own.
 
+**Do not name the repository it will go to.** You do not know it: the tool works it out from the
+template's manifest, and follows a fork through to the project it was forked from. Saying a name
+you inferred is how a person ends up agreeing to one repository while another receives the pull
+request. Say it goes to the project the template was built from, and let the tool's answer name it,
+which it does, including when it went through a fork.
+
 A template still waiting to be published is not ready to be offered. Say that rather than opening
 anything, and offer it again after it publishes.
 

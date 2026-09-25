@@ -52,6 +52,53 @@ test('adding the button twice changes nothing', () => {
   assert.equal(withButton(once, line), once);
 });
 
+test('a # inside a code fence is a comment, not a heading to sit under', () => {
+  // Caught on the real NandhaKishorM/laya README, which has no ATX heading at all and whose first
+  // `# ` is a Python comment 700 lines down. The button landed inside the sample.
+  const readme = [
+    '<p align="center"><img src="logo.png" /></p>',
+    '',
+    'Some prose.',
+    '',
+    '```python',
+    '# multilingual billing',
+    'r = router.predict(text)',
+    '```',
+  ].join('\n');
+  const out = withButton(readme, deployButton(CODE)).split('\n');
+  const at = out.indexOf(deployButton(CODE));
+  assert.ok(at >= 0, 'the button is somewhere');
+  assert.ok(at < out.indexOf('```python'), `the button went inside the fence, at line ${at}`);
+});
+
+test('a closing fence is not read as a second opening one', () => {
+  const readme = ['```', '# not a heading', '```', '', '# Real Heading', '', 'Text.'].join('\n');
+  const out = withButton(readme, deployButton(CODE)).split('\n');
+  assert.equal(out[out.indexOf('# Real Heading') + 2], deployButton(CODE));
+});
+
+test('it joins a badge row that is not made of deploy buttons', () => {
+  // laya's row is Colab, PyPI, Docs, Hugging Face. Matching vendor names in the alt text found
+  // nothing there and fell through to the heading search, which is how the fence bug was reached.
+  const readme = [
+    '<div align="center">',
+    '',
+    '[![Open In Colab](colab.svg)](https://colab.research.google.com/x)',
+    '[![PyPI version](pypi.svg)](https://pypi.org/project/laya/)',
+    '',
+    '</div>',
+  ].join('\n');
+  const out = withButton(readme, deployButton(CODE)).split('\n');
+  assert.equal(out[4], deployButton(CODE), 'appended after the LAST badge, not inserted into their order');
+  assert.equal(out[2], '[![Open In Colab](colab.svg)](https://colab.research.google.com/x)', 'their order is untouched');
+});
+
+test('a line that merely mentions a badge is not a badge row', () => {
+  const readme = ['# Title', '', 'We use [![CI](ci.svg)](ci) to check builds.', ''].join('\n');
+  const out = withButton(readme, deployButton(CODE)).split('\n');
+  assert.equal(out[2], deployButton(CODE), 'it went under the heading, not after the prose');
+});
+
 // ---- reading the registry's own manifest -----------------------------------
 
 const MANIFEST = `code: uptime-kuma
@@ -208,6 +255,81 @@ test('a manifest naming no upstream is refused rather than guessed at', async ()
 });
 
 // ---- the pull request -------------------------------------------------------
+
+// ---- through a fork to the project ------------------------------------------
+
+/** The manifest's link is a fork; the project is one hop up, under a different owner. */
+const FORKED = {
+  ...HAPPY,
+  'GET /repos/louislam/uptime-kuma': { default_branch: 'master', fork: true, source: { full_name: 'kuma-org/uptime-kuma' } },
+  'GET /repos/kuma-org/uptime-kuma': { default_branch: 'main' },
+  'GET /repos/kuma-org/uptime-kuma/git/ref/heads/main': { object: { sha: 'ROOTSHA' } },
+  'GET /repos/kuma-org/uptime-kuma/contents/README.md?ref=ROOTSHA': {
+    content: Buffer.from('# Uptime Kuma\n\nText.').toString('base64'),
+    sha: 'ROOTREADME',
+  },
+  'POST /repos/kuma-org/uptime-kuma/forks': {},
+  'POST /repos/kuma-org/uptime-kuma/pulls': { html_url: 'https://github.com/kuma-org/uptime-kuma/pull/4', number: 4 },
+};
+
+test('a manifest link that is a fork sends the offer to the project instead', async () => {
+  // meta.links.upstream records where the packaged code came from, which for some templates is a
+  // fork of the project. Offering the button to that fork means offering it to whoever made it,
+  // often one of us, while the project it belongs to never hears about it.
+  const seen = [];
+  const out = await run({ script: FORKED }, seen);
+  assert.equal(out.upstream, 'kuma-org/uptime-kuma');
+  assert.equal(out.declared, 'louislam/uptime-kuma', 'the answer still says what the manifest named');
+  assert.equal(out.url, 'https://github.com/kuma-org/uptime-kuma/pull/4');
+  assert.ok(seen.includes('POST /repos/kuma-org/uptime-kuma/forks'), 'the project is what gets forked');
+  assert.ok(seen.includes('POST /repos/kuma-org/uptime-kuma/pulls'), 'and what receives the pull request');
+  assert.ok(!seen.some((c) => /^POST \/repos\/louislam.*(forks|pulls)/.test(c)), 'the fork receives nothing');
+  // The base comes from the project's own default branch, which need not match the fork's.
+  assert.ok(seen.includes('GET /repos/kuma-org/uptime-kuma/git/ref/heads/main'));
+  assert.ok(seen.includes('GET /repos/kuma-org/uptime-kuma/contents/README.md?ref=ROOTSHA'));
+});
+
+test('a repository that is not a fork is left exactly where the manifest put it', async () => {
+  const seen = [];
+  const out = await run({}, seen);
+  assert.equal(out.upstream, 'louislam/uptime-kuma');
+  assert.equal(out.declared, 'louislam/uptime-kuma');
+  assert.equal(seen.filter((c) => c === 'GET /repos/louislam/uptime-kuma').length, 1, 'no second lookup');
+});
+
+test('a fork GitHub names no source for is refused rather than offered to the fork', async () => {
+  const orphan = { ...HAPPY, 'GET /repos/louislam/uptime-kuma': { default_branch: 'master', fork: true } };
+  const seen = [];
+  await assert.rejects(() => run({ script: orphan }, seen), /names no project it was forked from/);
+  assert.ok(!seen.some((c) => c.includes('/forks')));
+});
+
+test('the own-account guard is applied to the project, not to the fork it went through', async () => {
+  // A fork of someone else's project can perfectly well be ours. Checking the declared owner would
+  // refuse that outright; checking the resolved one is the question that matters, and the reverse
+  // case, our own project behind someone else's fork, is what must still be refused.
+  const ours = {
+    ...FORKED,
+    'GET /repos/louislam/uptime-kuma': { default_branch: 'master', fork: true, source: { full_name: 'CarmenDou/uptime-kuma' } },
+    'GET /repos/CarmenDou/uptime-kuma': { default_branch: 'main' },
+  };
+  await assert.rejects(() => run({ script: ours }), /belongs to the account this would fork it into/);
+
+  // And the other direction, which is laya's: the manifest names a fork that IS ours, while the
+  // project behind it is not. The guard ran before the redirect until now and would have refused
+  // this outright, which is the one case the whole feature exists for.
+  const oursIsTheFork = {
+    ...FORKED,
+    'GET /user': { login: 'louislam' },
+    'GET /repos/louislam/uptime-kuma': { default_branch: 'master', fork: true, source: { full_name: 'kuma-org/uptime-kuma' } },
+    'GET /repos/louislam/uptime-kuma-root': { default_branch: 'main' },
+    'POST /repos/louislam/uptime-kuma/git/refs': {},
+    'PUT /repos/louislam/uptime-kuma/contents/README.md': {},
+  };
+  const out = await run({ script: oursIsTheFork });
+  assert.equal(out.upstream, 'kuma-org/uptime-kuma', 'it reached the project behind our own fork');
+  assert.equal(out.declared, 'louislam/uptime-kuma');
+});
 
 test('the pull request goes to THEM, from a branch on our fork', async () => {
   const seen = [];
