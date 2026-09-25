@@ -1,5 +1,6 @@
-import { startJob, readJob, jobFeed, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
+import { startJob, readJob, jobFeed, readUpstreamOffer, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
 import { askForReview, reviewStatus } from './review.js';
+import { openUpstreamPr } from './upstream.js';
 
 // The job-control layer, offered to a conversational agent as MCP tools.
 //
@@ -119,6 +120,16 @@ const TOOLS = [
     },
   },
   {
+    name: 'offer_template_upstream',
+    description:
+      "Open a pull request on the ORIGINAL project's repository, adding the insta.template.yaml the job wrote plus one Deploy on InstaCloud line in their README, so anyone reading their page can deploy it. Only when a person has read what the job prepared and said to send it: this reaches a repository that is not ours and cannot be taken back, and it is opened under the account whose credential this holds. Never because a job finished. The job must have prepared the offer first; read_job says whether it did.",
+    inputSchema: {
+      type: 'object',
+      properties: { job_id: { type: 'string' } },
+      required: ['job_id'],
+    },
+  },
+  {
     name: 'stop_job',
     description:
       'End a job. Anything it already pushed stays pushed and nothing is reverted, so this abandons rather than undoes. Steering is almost always the better answer; stop only when the work should not continue at all.',
@@ -143,6 +154,8 @@ async function callTool(config, name, args, deps) {
     running = listRunningJobs,
     review = askForReview,
     reviews = reviewStatus,
+    offer = readUpstreamOffer,
+    openPr = openUpstreamPr,
   } = deps;
 
   // The job never posts anywhere itself. Whoever started it follows it and does
@@ -264,6 +277,35 @@ async function callTool(config, name, args, deps) {
       });
       const heading = args?.after ? `${r.activity.length} new since ${args.after}:` : 'Most recent:';
       return text(`${heading}\n\n${blocks.join('\n\n')}`);
+    }
+
+    case 'offer_template_upstream': {
+      const jobId = String(args?.job_id ?? '');
+      const job = await read(config, jobId);
+      // The repository the job was started on is the only one this can reach: the credential is
+      // broad, so what it may be pointed at comes from the job's own record, never from a caller.
+      if (!/^https:\/\/github\.com\//.test(job.url ?? '')) {
+        return failure(`Job ${jobId} was not started from a GitHub repository, so there is nothing to offer back.`);
+      }
+      let prepared;
+      try {
+        prepared = await offer(config, jobId);
+      } catch (error) {
+        return failure(`Could not read what ${jobId} prepared: ${error.message.slice(0, 160)}`);
+      }
+      if (!prepared.manifest) {
+        return failure(
+          `Job ${jobId} prepared no upstream offer. Ask it to write one into its own upstream/ directory first, with steer_job.`,
+        );
+      }
+      try {
+        const pr = await openPr(config, { repoUrl: job.url, ...prepared });
+        return text(
+          `Opened ${pr.url} on ${job.url}, from ${pr.fork} on branch ${pr.branch}. It is theirs to accept or refuse.`,
+        );
+      } catch (error) {
+        return failure(`Could not open the pull request: ${error.message.slice(0, 300)}`);
+      }
     }
 
     case 'stop_job':

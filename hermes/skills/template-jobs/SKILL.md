@@ -63,6 +63,21 @@ Their message reaches you in the middle of the loop. Answer it, then carry on fo
 - A change of direction: pass it on with `steer_job`, in their words rather than your summary, say
   in a sentence that you have, and carry on following. The agent keeps everything it has done.
 
+## Offering the template back to the project it came from
+
+A job that verified a template also prepares an offer for the ORIGINAL project: an
+`insta.template.yaml` for their own repository and one Deploy on InstaCloud line for their README,
+so their readers deploy it from their repository rather than from our registry. It writes them as
+files and sends nothing; its RESULT says `offer: prepared` or why not.
+
+Show the person what it prepared, from `read_job`, and say plainly that sending it opens a pull
+request on a repository that is not ours, under Carmen's GitHub account, and cannot be taken back.
+Only when they say to send it: `offer_template_upstream` with the job id. Never because a job
+finished, and never on your own.
+
+If they want it changed first, that is `steer_job`: the agent wrote those files and can rewrite
+them.
+
 ## After a job has finished
 
 Anything about what a job built, its deployment, the data it created while verifying, the accounts

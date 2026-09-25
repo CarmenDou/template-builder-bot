@@ -192,9 +192,46 @@ Use \`note:\` for something unexpected that changed your plan, and only for that
 PR body. Say what you did and what it means, never what you typed.`;
 }
 
+/**
+ * What a job leaves for the project it was built from, if that project could use
+ * it. Prepared as files and never sent: offering it is a person's decision, and
+ * the credential that could is not on this box.
+ */
+export function upstreamOfferInstructions(url, dir) {
+  return `## Leaving an offer for ${url}
+
+A template can also live in the project's OWN repository, at its root, the way a \`render.yaml\`
+does: anyone reading their page presses a button and deploys it, and they keep the manifest. Prepare
+that offer when your verdict is directly-usable or thin-shell and the deploy verified. Skip it for
+\`out\`, and for \`tool-not-service\` unless the terminal box is genuinely what that project wants
+to hand its own readers.
+
+Write four files into \`${dir}/upstream/\`. Nothing is sent: a person reads them and decides.
+
+    manifest.txt     the insta.template.yaml as THEIR repository would carry it
+    readme-line.txt  the one line for their README
+    pr-title.txt     one line
+    pr-body.txt      the pull request body
+
+The manifest is not a copy of the one you opened a PR with. Theirs has no \`maintainer: official\`
+and no \`sourceRepo\` pointing at our registry, and a thin shell has to be resolvable from their
+repository: if your template needs an overlay image we build, say so in the body and offer only
+what works without it, or write no offer at all and say why in an \`ask:\` line.
+
+The README line is exactly:
+
+    [![Deploy on InstaCloud](https://cdn.jsdelivr.net/gh/InsForge/instacloud-oss@main/assets/deploy-button.svg)](https://console.instacloud.com/deploy?repo=${url})
+
+Write the body for a maintainer who has never heard of us and owes us nothing. Say what the two
+files do, that the button deploys from their repository rather than from anything of ours, that
+nothing about it is required to use their project, and what you verified: the version you deployed
+and that it came up. No pitch, no adjectives about our platform. Their repository, their call.`;
+}
+
 export function buildTask({ url, extra, dir }) {
   const hint = extra ? `\n\nExtra instructions from the requester: ${extra}` : '';
   const stages = dir ? `\n\n${stageInstructions(dir)}` : '';
+  const offer = dir ? `\n\n${upstreamOfferInstructions(url, dir)}` : '';
   return `Turn ${url} into an InstaCloud template.
 
 Follow your CLAUDE.md end to end: triage it against the five judgements, create a fresh project for
@@ -209,6 +246,7 @@ Finish your reply with a section headed RESULT containing, one per line:
   pr: <PR url, or none>
   created: <something you made that a human needs in order to carry on>
   ask: <one thing a human has to settle>
+  offer: <prepared | none, and one line of why not>
 
 Repeat either line once per thing, or leave it out entirely if there is nothing. One sentence each.
 For \`ask\`, name the decision rather than arguing it: the reasoning belongs in the PR body, and a
@@ -222,7 +260,7 @@ cannot help them: template variable values are write-only. Give them everything 
 
 Only what you BROUGHT INTO EXISTENCE. The credentials you were HANDED to do the job with, the GitHub
 token and the platform key on this box, are never reported anywhere, in any channel, for any
-reason.${hint}${stages}`;
+reason.${hint}${stages}${offer}`;
 }
 
 export function buildFollowupTask({ pr, extra, dir }) {
@@ -486,6 +524,36 @@ export async function steerJob(config, jobId, message, deps = {}) {
 // follower only between calls, and at 45 seconds, plus a follower's own sleep,
 // "stop" took a minute and a half to land.
 export const FOLLOW_WAIT_SECONDS = 20;
+
+/**
+ * The contribution a job prepared for the repository it was built from, which it
+ * writes into `upstream/` in its own job directory.
+ *
+ * Read as files rather than passed by the caller, so what reaches the other
+ * project's pull request is what the agent wrote and looked at, not a relay's
+ * summary of it.
+ */
+export async function readUpstreamOffer(config, jobId, deps = {}) {
+  const { run = execInBox } = deps;
+  if (!/^[\w-]+$/.test(String(jobId))) throw new Error(`not a job id: ${jobId}`);
+  const dir = `${JOBS_ROOT}/${jobId}/upstream`;
+  const parts = ['manifest', 'readme-line', 'pr-title', 'pr-body'];
+  const script = parts
+    .map((name) => [`echo "---${name.toUpperCase()}---"`, `cat ${dir}/${name}.txt 2>/dev/null || true`])
+    .flat()
+    .join('\n');
+  const { stdout } = await run(config, script, { timeoutMs: 60000 });
+  const read = (name) => {
+    const after = stdout.split(`---${name.toUpperCase()}---`)[1] ?? '';
+    return after.split(/---[A-Z-]+---/)[0].trim();
+  };
+  return {
+    manifest: read('manifest'),
+    readmeLine: read('readme-line'),
+    title: read('pr-title'),
+    body: read('pr-body'),
+  };
+}
 
 /**
  * What a job did since the caller last looked, waiting up to `waitSeconds` for it

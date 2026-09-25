@@ -23,6 +23,7 @@ test('every tool says what it is for, and none of them can delete', () => {
     'continue_template_pr',
     'follow_job',
     'list_running_jobs',
+    'offer_template_upstream',
     'read_job',
     'review_status',
     'start_template_job',
@@ -30,7 +31,7 @@ test('every tool says what it is for, and none of them can delete', () => {
     'stop_job',
   ]);
   // The box holds a platform key for the whole org. Nothing here may reach it:
-  // a caller can only do these nine things, whatever it is asked to do.
+  // a caller can only do these ten things, whatever it is asked to do.
   const surface = JSON.stringify(TOOLS);
   assert.ok(!/delete|remove|destroy/i.test(surface), 'no destructive verb is offered');
   for (const t of TOOLS) assert.ok(t.description.length > 60, `${t.name} explains itself`);
@@ -287,4 +288,61 @@ test('a quiet look says nothing, so a short wait does not turn into chatter', ()
   const d = TOOLS.find((t) => t.name === 'follow_job').description;
   assert.match(d, /when it shows nothing new, say nothing and call again/);
   assert.match(d, /about 20 seconds/);
+});
+
+test('offering upstream can only reach the repository the job itself names', async () => {
+  // The credential behind this is broad, so what it may be pointed at comes from the job's own
+  // record. A caller naming another repository has nowhere to put it: there is no such argument.
+  const tool = TOOLS.find((t) => t.name === 'offer_template_upstream');
+  assert.deepEqual(Object.keys(tool.inputSchema.properties), ['job_id']);
+
+  let sentTo = null;
+  await call(
+    'offer_template_upstream',
+    { job_id: 'J1' },
+    {
+      read: async () => ({ url: 'https://github.com/louislam/uptime-kuma', stages: [], steps: [] }),
+      offer: async () => ({ manifest: 'code: x\n', readmeLine: '[![x](y)](z)', title: 't', body: 'b' }),
+      openPr: async (_c, input) => {
+        sentTo = input.repoUrl;
+        return { url: 'https://github.com/louislam/uptime-kuma/pull/9', number: 9, fork: 'CarmenDou/uptime-kuma', branch: 'b' };
+      },
+    },
+  );
+  assert.equal(sentTo, 'https://github.com/louislam/uptime-kuma');
+});
+
+test('a job that came from a PR number, not a repository, has nothing to offer back', async () => {
+  const res = await call(
+    'offer_template_upstream',
+    { job_id: 'J1' },
+    {
+      read: async () => ({ url: 'PR #149', stages: [], steps: [] }),
+      offer: async () => assert.fail('must not read an offer'),
+      openPr: async () => assert.fail('must not open anything'),
+    },
+  );
+  assert.equal(res.result.isError, true);
+  assert.match(res.result.content[0].text, /not started from a GitHub repository/);
+});
+
+test('a job that prepared nothing is refused, and told how to prepare it', async () => {
+  const res = await call(
+    'offer_template_upstream',
+    { job_id: 'J1' },
+    {
+      read: async () => ({ url: 'https://github.com/o/r', stages: [], steps: [] }),
+      offer: async () => ({ manifest: '', readmeLine: '', title: '', body: '' }),
+      openPr: async () => assert.fail('must not open anything'),
+    },
+  );
+  assert.equal(res.result.isError, true);
+  assert.match(res.result.content[0].text, /prepared no upstream offer.*steer_job/s);
+});
+
+test('offering upstream says it is outward and needs a person to have said so', () => {
+  const d = TOOLS.find((t) => t.name === 'offer_template_upstream').description;
+  assert.match(d, /Only when a person has read what the job prepared and said to send it/);
+  assert.match(d, /cannot be taken back/);
+  assert.match(d, /Never because a job finished/);
 });
