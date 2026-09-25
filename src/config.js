@@ -33,6 +33,10 @@ export function loadConfig(env = process.env, { needsSlack = true } = {}) {
     // public_repo, which fine-grained tokens cannot do. It is deliberately NOT on the agent box:
     // that scope can write to every public repository its owner can, and the box runs whatever a
     // job decides to. Absent, offer_template_upstream refuses and says so.
+    //
+    // `env` here is THIS process's, which under hermes is the env map in its config.yaml rather
+    // than the hermes container's. A secret set on the service and never added to that map reads
+    // as absent, so the refusal has to name both places (see upstream.js).
     githubPrToken: env.GITHUB_PR_TOKEN,
 
     // How the bot reaches the agent box

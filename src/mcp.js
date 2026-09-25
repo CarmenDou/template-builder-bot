@@ -285,8 +285,14 @@ async function callTool(config, name, args, deps) {
       // so nothing a caller writes may decide which repository gets written to.
       try {
         const pr = await openPr(config, { code });
+        // Name the redirect when there was one. The manifest's link is where the packaged code came
+        // from, which for some templates is a fork of the project, and a reader who was told one
+        // repository and sees another in the answer deserves the reason in the same sentence.
+        const through = pr.declared && pr.declared !== pr.upstream
+          ? ` The manifest names ${pr.declared}, which is a fork, so this went to the project it was forked from.`
+          : '';
         return text(
-          `Opened ${pr.url} on ${pr.upstream}, from ${pr.fork} on branch ${pr.branch}. One line in their README, pointing at https://instacloud.com/templates/${code}. It is theirs to accept or refuse.`,
+          `Opened ${pr.url} on ${pr.upstream}, from ${pr.fork} on branch ${pr.branch}.${through} One line in their README, pointing at https://instacloud.com/templates/${code}. It is theirs to accept or refuse.`,
         );
       } catch (error) {
         return failure(`Could not offer ${code || '(no code)'} upstream: ${error.message.slice(0, 300)}`);
