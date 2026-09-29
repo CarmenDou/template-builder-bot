@@ -74,8 +74,14 @@ test('what goes to the box, and what comes back when the box simply answers', as
   assert.deepEqual(out.rows, ROWS);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].c, config);
-  // insta compute exec is capped at 180 seconds, so this stays under it.
-  assert.equal(calls[0].opts.timeoutMs, 170000);
+  // insta compute exec cuts a command off at about 31 seconds and boxCommand passes no --timeout, so
+  // our kill has to land under that or it never fires. 170000 was the unmeasured number.
+  assert.equal(calls[0].opts.timeoutMs, 28000, 'our kill lands just under the measured 31 second cutoff');
+  // The lock gives up before that kill, with room left for twice the measured 4.4 second cold run.
+  const wait = /^flock -w (\d+) 9 /m.exec(calls[0].script);
+  assert.ok(wait, 'the script takes the lock with a bounded wait');
+  const room = calls[0].opts.timeoutMs - Number(wait[1]) * 1000;
+  assert.ok(room >= 2 * 4400, `a ${wait[1]} second lock wait leaves ${room} ms to work, under twice the cold run`);
   // The refresh comes first and its own line ends it, so the detector never sees a stale tree.
   assert.ok(calls[0].script.startsWith(`${refreshScript()}\n`), 'the refresh runs first');
   assert.equal(
@@ -274,7 +280,7 @@ test('a run that never produced output still says why, because execFile leaves s
   // The real shape of a run killed at its timeout, measured: not the invented message it once had.
   const slow = await askAndThrow(failed({ code: null, killed: true, signal: 'SIGTERM', stdout: '', stderr: '' }));
   assert.match(slow.error, /killed by SIGTERM/);
-  assert.match(slow.error, /170 second/);
+  assert.match(slow.error, /28 second/);
   assert.doesNotMatch(slow.error, /flock|compute exec|\(nothing\)/);
 
   // Killed from outside carries a signal and no `killed`, and a kill with no signal still says so.

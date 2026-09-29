@@ -17,9 +17,12 @@ import { REGISTRY_DIR, refreshScript } from './registry.js';
 // `--apply` is never a code.
 const CODE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-// `insta compute exec` caps a command at 180 seconds (see boxCommand in agent.js), so a longer
-// timeout is dead code and someone will otherwise restore 300000. The work measures about 3.
-const TIMEOUT_MS = 170000;
+// Our own kill, in milliseconds. Not 170000: `insta compute exec` cuts a command off at about 31
+// seconds (measured, the platform default is 30) and boxCommand in agent.js does not pass `--timeout`,
+// so that cutoff arrives as an opaque HTTP 502 with `killed: false` and a longer number never fires.
+// 28 lands 3 seconds under the measured 31.0 and is 6x the 4.4 second cold run, so a caller gets the
+// killed message below. Do not restore 170000 without passing `--timeout` there.
+const TIMEOUT_MS = 28000;
 
 // A failed clone or install prints a page, and this lands in a chat reply.
 const TAIL = 200;

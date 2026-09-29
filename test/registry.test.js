@@ -14,12 +14,16 @@ test('the first call clones, later ones fetch, and neither races the other', () 
   // The lock is taken using file descriptor form, not nested sh -c.
   // Use anchored line match to prevent matching a comment or partial string.
   assert.match(s, /^exec 9>/m, 'the lock is held by the shell via file descriptor');
-  assert.match(s, /^flock -w 120 9 \|\| exit 1$/m, 'the lock command waits up to 120 seconds and exits on timeout');
+  // 15 and not 120: the channel cuts a command off at about 31 seconds, and the wait has to end first.
+  const lock = /^flock -w (\d+) 9 \|\| \{ echo '([^']+)' >&2; exit 1; \}$/m.exec(s);
+  assert.ok(lock, 'the lock wait is bounded and says so on stderr when it gives up');
+  assert.equal(lock[1], '15', 'the lock wait ends well before the 31 second channel cutoff');
+  assert.equal(lock[2], 'could not take the registry lock in 15 seconds, another check is still running');
   assert.ok(!s.includes('sh -c'), 'no nested shell quote wrapping');
 
   // The lock is taken before any work: exec 9> and flock must come before git operations.
   const execIndex = s.indexOf('exec 9>');
-  const flockIndex = s.indexOf('flock -w 120 9');
+  const flockIndex = s.indexOf('flock -w');
   const cloneIndex = s.indexOf('git clone');
   const fetchIndex = s.indexOf('fetch');
   const resetIndex = s.indexOf('reset --hard');
