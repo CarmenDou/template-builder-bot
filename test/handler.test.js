@@ -8,7 +8,7 @@ const config = {
   pollIntervalMs: 10,
 };
 
-const mention = (text, channel = 'C_OK') => ({ channel, text, ts: '1.0' });
+const mention = (text, channel = 'C_OK', user = 'U_ASKER') => ({ channel, text, ts: '1.0', user });
 
 test('stays silent in a channel it does not serve', async () => {
   const out = await handleMention({
@@ -52,6 +52,29 @@ test('starts the job and says what will happen', async () => {
   assert.equal(out.job.jobId, 'J9');
   assert.match(out.reply, /J9/);
   assert.match(out.reply, /draft PR/i);
+});
+
+test('carries who asked, because this is the only moment anyone knows', async () => {
+  // Weeks later, when this template's upstream moves, the job ticket is the only
+  // record of who wanted it. The thread it was asked in does not say.
+  let started = null;
+  await handleMention({
+    event: mention('<@U1> https://github.com/a/b'),
+    config,
+    deps: { start: async (_c, req) => ((started = req), { jobId: 'J9' }) },
+  });
+  assert.equal(started.slack.user, 'U_ASKER');
+
+  // Slack leaves `user` out of some events, and an unknown asker is not a failure:
+  // whoever reads the ticket falls back, it does not go looking for a name here.
+  started = null;
+  await handleMention({
+    event: { channel: 'C_OK', text: '<@U1> https://github.com/a/b', ts: '1.0' },
+    config,
+    deps: { start: async (_c, req) => ((started = req), { jobId: 'J9' }) },
+  });
+  assert.equal(started.slack.user, undefined);
+  assert.equal(started.slack.channel, 'C_OK');
 });
 
 test('posts each new stage line exactly once as it appears', async () => {

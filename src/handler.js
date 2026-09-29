@@ -105,7 +105,8 @@ export async function handleMention({ event, config, deps = {} }) {
       job: null,
     };
   };
-  const slack = { channel: event.channel, threadTs: event.thread_ts ?? event.ts };
+  // `user` is the only moment anyone knows who asked for this template.
+  const slack = { channel: event.channel, threadTs: event.thread_ts ?? event.ts, user: event.user };
 
   if (!config.allowedChannels.includes(event.channel)) {
     // Silence rather than a refusal message: a bot that answers in channels it
