@@ -515,10 +515,14 @@ test('what is sent to the box is the detector in its read only mode, for one tem
 test('check_template_upstream is described so that nobody needs a skill to use it', () => {
   const tool = TOOLS.find((t) => t.name === 'check_template_upstream');
   const d = tool.description;
-  // What it is, and that asking costs nothing.
+  // What it is, and what asking costs: read only is true of the repository it reports on, and not of
+  // the box, where a call resets a shared checkout, installs into it and takes a lock.
   assert.match(d, /What each published template pins, and what its upstream has released since/);
-  assert.match(d, /Read only/);
-  assert.match(d, /opens nothing and changes nothing/);
+  assert.match(d, /Read only as to the repository it reports on/);
+  assert.match(d, /no pull request is opened and no pin is moved/);
+  assert.match(d, /does refresh a shared checkout of instacloud-oss on the agent box/, 'it says what it does to the box');
+  assert.match(d, /exclusive lock/, 'and that a second call waits behind the first');
+  assert.doesNotMatch(d, /changes nothing|opens nothing/, 'a call changes the checkout on the box');
   // How to ask: the whole registry is the default question, and one code narrows it.
   assert.match(d, /Call it with no code for the whole registry/);
   assert.match(d, /whenever anyone wonders whether a template is behind/);

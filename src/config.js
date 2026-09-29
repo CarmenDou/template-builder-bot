@@ -46,7 +46,7 @@ export function loadConfig(env = process.env, { needsSlack = true } = {}) {
     agentService: env.AGENT_SERVICE ?? 'claude-code',
 
     // Set SSH_CONFIG and the box is driven over ssh instead of `compute exec`,
-    // which caps a command at 64KB of argv and 180 seconds. Absent, as in the
+    // which cuts a command off at about 31 seconds (see boxCommand). Absent, as in the
     // tests and anywhere without the one-time `compute ssh --setup`, it stays
     // on exec. The choice is explicit rather than a fallback, because a silent
     // fallback would hide an expired certificate as a slow day.

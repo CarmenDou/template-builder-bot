@@ -20,6 +20,7 @@ and you are the only one who talks about it in the conversation. The job itself 
 - Someone gives you a GitHub repository to make into a template
 - Someone asks for a change to a template pull request on `InsForge/instacloud-oss`
 - Someone asks how a template job is going, or wants it to change course
+- Someone asks whether a template is behind its upstream, or which templates are: `check_template_upstream`
 
 ## Starting
 

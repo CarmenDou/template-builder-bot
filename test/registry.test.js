@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { posix } from 'node:path';
 import { REGISTRY_DIR, refreshScript } from '../src/registry.js';
 
 test('the first call clones, later ones fetch, and neither races the other', () => {
@@ -57,4 +58,46 @@ test('the registry lives beside the jobs, not inside one', () => {
   // read only and shared on purpose, so it must not sit under a job id.
   assert.match(REGISTRY_DIR, /^\/data\/work\//);
   assert.ok(!REGISTRY_DIR.includes('/jobs/') && !REGISTRY_DIR.includes('/data/work/jobs'), 'not inside the per-job tree');
+});
+
+test('the lock is one fixed file beside the directory it protects', () => {
+  // This is the only line that makes two callers wait for each other. `exec 9>/data/work/lock-$$`
+  // locks a different file in every process, so nothing is ever serialised and every other
+  // assertion about the lock still holds. Inside the directory is no better: a clone refuses a
+  // directory that is not empty, so the lock would have to be gone before the first run.
+  const s = refreshScript();
+  const held = /^exec 9>(\S+)$/m.exec(s);
+  assert.ok(held, 'the lock file is opened on descriptor 9');
+  assert.equal(held[1], `${REGISTRY_DIR}.lock`, 'the lock file is the registry directory plus .lock, the same in every process');
+  assert.equal(posix.dirname(held[1]), posix.dirname(REGISTRY_DIR), 'beside the directory, not inside it');
+  // Opening a file in a directory that does not exist fails, and on a cold box nothing else has made it.
+  const made = /^mkdir -p (\S+)$/m.exec(s);
+  assert.ok(made, 'the directory is made before the lock is opened');
+  assert.equal(made[1], posix.dirname(held[1]), 'the directory made is the one the lock file is in');
+  assert.ok(s.indexOf('mkdir -p') < s.indexOf('exec 9>'), 'mkdir comes before the lock is opened');
+});
+
+test('a stale index lock is cleared, but only once the flock is ours and before anything runs', () => {
+  // Our own kill can cut a `reset --hard` off, and the tool never clears the file that leaves behind.
+  const lines = refreshScript().split('\n');
+  const at = (re) => lines.findIndex((l) => re.test(l));
+  const rm = at(/^rm -f /);
+  assert.equal(lines[rm], `rm -f ${REGISTRY_DIR}/.git/index.lock`, 'the index lock of the registry checkout, and nothing else');
+  assert.equal(lines.filter((l) => /\brm\b/.test(l)).length, 1, 'that is the only thing this script removes');
+  // Before the flock it could delete the lock of a run that is in the middle of its reset right now.
+  assert.ok(at(/^flock -w /) < rm, 'cleared after the flock is taken');
+  for (const [what, re] of [['clone', /clone --depth/], ['fetch', /fetch --depth/], ['reset', /reset --hard/], ['npm', /^npm /]]) {
+    assert.ok(rm < at(re), `cleared before ${what}`);
+  }
+});
+
+test('the install runs no lifecycle script, whatever origin/main says', () => {
+  // Every install script of every dependency, and the root package's own, would otherwise run here
+  // on a box holding a push token, from whatever the default branch is at that moment.
+  const npm = refreshScript()
+    .split('\n')
+    .filter((l) => /(^|\s)npm\s/.test(l));
+  assert.equal(npm.length, 1, 'one npm command, so the assertion below covers all of them');
+  const scripts = npm[0].split(/\s+/).filter((flag) => flag.includes('scripts'));
+  assert.deepEqual(scripts, ['--ignore-scripts'], 'the flag is given as it is, not negated or set to false');
 });

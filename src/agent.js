@@ -288,8 +288,12 @@ function execInsta(config, args, opts) {
 /**
  * How this process reaches the agent box, as argv.
  *
- * Over ssh when the box has been set up for it, because `compute exec` caps a
- * command at 64KB of argv and 180 seconds and drops the channel on a long one.
+ * Over ssh when the box has been set up for it, because `compute exec` cuts a
+ * command off at about 31 seconds (measured: the platform default is 30, and the
+ * cut arrives as an opaque HTTP 502) and takes at most 64KB of argv (not measured
+ * here). Its `--timeout` flag accepts 1 to 180, so 180 is the most a caller can
+ * ask for, and only by passing it. Nothing here passes it, so every exec call
+ * gets the 30.
  * Over exec otherwise, which is what the CLI's own help points automation at
  * and what the tests and any machine without a certificate get.
  *
