@@ -392,9 +392,11 @@ export async function startJob(config, { url, pr, extra, slack }, deps = {}) {
   );
   const runnerB64 = Buffer.from(runner, 'utf8').toString('base64');
 
-  // Who to answer, written next to the job. The bot's own memory does not
-  // survive a redeploy, and the agent keeps running when the bot restarts, so a
-  // job whose thread lived only in memory finishes with nobody listening.
+  // Who to answer and who asked, written next to the job. The bot's own memory
+  // does not survive a redeploy, and the agent keeps running when the bot
+  // restarts, so a job whose thread lived only in memory finishes with nobody
+  // listening. `user` outlives the thread for a different reason: weeks later,
+  // when this template's upstream moves, it is the only record of who wanted it.
   const ticket = Buffer.from(
     JSON.stringify({ jobId, sessionId, url: url ?? (pr ? `PR #${pr}` : 'unknown'), ...slack }),
     'utf8',
