@@ -26,6 +26,11 @@ const TOOLS = [
           type: 'string',
           description: 'Anything the requester asked for beyond the default, in their own words.',
         },
+        requested_by: {
+          type: 'string',
+          description:
+            'The Slack member id of whoever asked for this template, like U0ABCDEFGHI. Pass it whenever you know it. This is the only moment anyone does: weeks later, when this template\'s upstream moves, it decides who gets asked to review the bump, and git cannot answer that because the commit is made by the agent. Leave it out rather than guessing, an unknown asker falls back and a wrong one sends the question to the wrong person.',
+        },
       },
       required: ['repo_url'],
     },
@@ -193,7 +198,15 @@ async function callTool(config, name, args, deps) {
           `Job ${busy.jobId} is already templating ${url}. Starting a second one would have both push to the same branch. Use steer_job on ${busy.jobId}.`,
         );
       }
-      const { jobId } = await start(config, { url, extra: args?.instructions, slack: {} });
+      // `slack` rides into the ticket beside the job. The channel and thread are Hermes's business
+      // and it does not pass them, but the asker outlives this job: it is what an upstream bump
+      // weeks from now has to look up, and there is no second chance to record it.
+      const asked = String(args?.requested_by ?? '').trim();
+      const { jobId } = await start(config, {
+        url,
+        extra: args?.instructions,
+        slack: asked ? { user: asked } : {},
+      });
       return text(`Started job ${jobId} on ${url}.${follow(jobId)}`);
     }
 
