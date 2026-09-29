@@ -31,8 +31,9 @@ const LOCK_FILE = `${REGISTRY_DIR}.lock`;
  *
  * The shared checkout is read by every check, under a lock, and is never written. A bump writes,
  * commits and pushes, so it gets its own tree, and one per template so bumps of two different
- * templates cannot collide in the filesystem. Nothing serializes two bumps of the SAME template
- * yet, so whoever runs this script has to hold a lock around it.
+ * templates cannot collide in the filesystem. Two bumps of the SAME template are serialized by
+ * `bumpScript` in bump.js, which holds `<this path>.lock` around the clone, the patch and the push,
+ * so anything else that writes here has to take that lock as well.
  *
  * Throws on anything that is not a template code, because the result is handed to `rm -rf` and
  * `../registry` would name the shared checkout.
