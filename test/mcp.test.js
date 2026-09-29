@@ -86,6 +86,26 @@ test('a free repo starts, and the requester words are passed through', async () 
   assert.match(out.result.content[0].text, /J-new/);
 });
 
+test('who asked rides along, because nothing else will remember', async () => {
+  // Weeks later an upstream bump needs someone to review it, and git cannot say who wanted this
+  // template: the agent makes the commit. The ticket beside the job is the only record.
+  const run = async (args) => {
+    let started = null;
+    await rpc(
+      'tools/call',
+      { name: 'start_template_job', arguments: { repo_url: 'https://github.com/a/b', ...args } },
+      { running: async () => [], start: async (_c, req) => ((started = req), { jobId: 'J-new' }) },
+    );
+    return started;
+  };
+
+  assert.equal((await run({ requested_by: 'U0APR6BGUSU' })).slack.user, 'U0APR6BGUSU');
+  // Not knowing is a normal outcome, not a failure: the job starts and the reader falls back.
+  assert.deepEqual((await run({})).slack, {});
+  // An empty string is not an id. Carrying it would look like an answer and mention nobody.
+  assert.deepEqual((await run({ requested_by: '   ' })).slack, {});
+});
+
 test('something that is not a GitHub URL is refused before anything starts', async () => {
   const out = await rpc(
     'tools/call',
