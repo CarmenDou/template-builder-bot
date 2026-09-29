@@ -1,12 +1,17 @@
-// A read-only checkout of instacloud-oss, kept current so the detector can be run against it.
+// Two checkouts of instacloud-oss on the box: one shared and read-only, kept current so the detector
+// can be run against it, and one scratch checkout per template that a bump is free to write to.
 //
-// Shared on purpose, unlike the per-job clones: those are writable and two agents sharing one
-// overwrite each other, while this one is only ever read. Shared still means serialized, because
-// a reset landing while another check is reading hands that check a half-updated tree.
+// The shared one is shared on purpose, unlike the per-job clones: those are writable and two agents
+// sharing one overwrite each other, while this one is only ever read. Shared still means serialized,
+// because a reset landing while another check is reading hands that check a half-updated tree.
 
 import { posix } from 'node:path';
+import { inspect } from 'node:util';
 
 const REPO = 'https://github.com/InsForge/instacloud-oss.git';
+
+// The same pattern as CODE in upstream.js and drift.js, so a code those accept is accepted here.
+const CODE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 // Seconds to wait for the lock. Not 120: `insta compute exec` cuts a command off at about 31 seconds
 // (measured, the platform default is 30) and boxCommand in agent.js does not pass `--timeout`, so a
@@ -20,6 +25,41 @@ export const REGISTRY_DIR = '/data/work/registry';
 
 // Beside the directory it guards, not inside it, because a clone refuses a directory that is not empty.
 const LOCK_FILE = `${REGISTRY_DIR}.lock`;
+
+/**
+ * A scratch checkout for one bump, outside the shared read-only one.
+ *
+ * The shared checkout is read by every check, under a lock, and is never written. A bump writes,
+ * commits and pushes, so it gets its own tree, and one per template so bumps of two different
+ * templates cannot collide in the filesystem. Nothing serializes two bumps of the SAME template
+ * yet, so whoever runs this script has to hold a lock around it.
+ *
+ * Throws on anything that is not a template code, because the result is handed to `rm -rf` and
+ * `../registry` would name the shared checkout.
+ */
+export function bumpDir(code) {
+  if (typeof code !== 'string' || !CODE.test(code)) throw new Error(`${inspect(code)} is not a template code`);
+  return `/data/work/bump/${code}`;
+}
+
+/**
+ * Shell that leaves `bumpDir(code)` holding a writable, current, FULL checkout of main.
+ *
+ * Full, not shallow: `version-guard.mjs` in that repository compares a changed template against a
+ * base ref, and there is nothing to compare against in a depth-1 clone.
+ *
+ * Discarded and recloned rather than reset: a previous attempt may have left a commit, a branch, a
+ * conflicted merge or an interrupted rebase, and the cost measured on the box is about a second.
+ */
+export function cloneForBumpScript(code) {
+  const dir = bumpDir(code);
+  return [
+    `rm -rf ${dir}`,
+    `mkdir -p ${posix.dirname(dir)}`,
+    `git clone --branch main ${REPO} ${dir} || exit 1`,
+    `npm --prefix ${dir}/templates install --omit=dev --ignore-scripts --loglevel=error --no-audit --no-fund || exit 1`,
+  ].join('\n');
+}
 
 /**
  * Shell that leaves the registry current, from either a cold box or a warm one.

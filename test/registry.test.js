@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { posix } from 'node:path';
-import { REGISTRY_DIR, refreshScript } from '../src/registry.js';
+import { REGISTRY_DIR, bumpDir, cloneForBumpScript, refreshScript } from '../src/registry.js';
 
 test('the first call clones, later ones fetch, and neither races the other', () => {
   const s = refreshScript();
@@ -100,4 +100,120 @@ test('the install runs no lifecycle script, whatever origin/main says', () => {
   assert.equal(npm.length, 1, 'one npm command, so the assertion below covers all of them');
   const scripts = npm[0].split(/\s+/).filter((flag) => flag.includes('scripts'));
   assert.deepEqual(scripts, ['--ignore-scripts'], 'the flag is given as it is, not negated or set to false');
+});
+
+test('a bump gets its own writable checkout, never the shared read-only one', () => {
+  const dir = bumpDir('n8n');
+  assert.ok(dir.startsWith('/data/work/'), 'beside the jobs and the registry');
+  assert.ok(!dir.startsWith(`${REGISTRY_DIR}/`) && dir !== REGISTRY_DIR, 'not inside the shared checkout');
+  assert.match(dir, /n8n/, 'one directory per template, so two templates cannot collide');
+  assert.notEqual(bumpDir('n8n'), bumpDir('claude-code'), 'the path comes from the code, not from a constant');
+});
+
+test('bumpDir feeds rm -rf, so it refuses anything that is not a template code', () => {
+  // '../registry' is the one that matters: it resolves to the shared checkout, and so does
+  // 'claude-code/../../registry' once the claude-code scratch tree exists. A non-string is
+  // refused too, because a one-element array or a number would otherwise pass the pattern as text.
+  const refused = [
+    '../registry', 'claude-code/../../registry', '..', '', '/etc', 'a/b', 'n8n; rm -rf /', 'n8n\n', 'N8N',
+    '-rf', 'a-', '-a', 'a--a', 42, null, undefined, ['n8n'],
+  ];
+  for (const bad of refused) {
+    assert.throws(() => bumpDir(bad), /is not a template code/, `bumpDir(${JSON.stringify(bad)}) throws`);
+    assert.throws(() => cloneForBumpScript(bad), /is not a template code/, `no script is built for ${JSON.stringify(bad)}`);
+  }
+  for (const good of ['n8n', 'claude-code', 'whisper-turbo', '9router']) {
+    assert.equal(bumpDir(good), `/data/work/bump/${good}`);
+    assert.doesNotThrow(() => cloneForBumpScript(good));
+  }
+});
+
+test('the character classes are pinned by sweep, because a list of examples cannot pin them', () => {
+  // Loosening a class by one character passes every named case above and reopens the traversal:
+  // `(-[a-z0-9./]+)*` admits 'claude-code/../../registry'. So every code unit is tried, and the
+  // named cases stay because a failure there names the attack and this one names a number.
+  const alnum = new Set('abcdefghijklmnopqrstuvwxyz0123456789');
+  const refused = (s) => {
+    try {
+      bumpDir(s);
+      return false;
+    } catch (e) {
+      return e instanceof Error && /is not a template code/.test(e.message);
+    }
+  };
+  const accepted = (s) => {
+    try {
+      return bumpDir(s) === `/data/work/bump/${s}`;
+    } catch {
+      return false;
+    }
+  };
+
+  const leaked = [];
+  // Every refusal builds an Error, and capturing the stack is three quarters of the cost of 390,000 of them.
+  const stackLimit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 0;
+  try {
+    for (let u = 0; u <= 0xffff; u++) {
+      const c = String.fromCharCode(u);
+      if (alnum.has(c)) continue;
+      // After a letter, before one, after a hyphen segment, right after a hyphen, and alone.
+      const shapes = [`a${c}`, `${c}a`, `a-a${c}`, `a-${c}a`, c];
+      // Between two letters, where a separator other than the hyphen would sit. A hyphen there is a code.
+      if (c !== '-') shapes.push(`a${c}a`);
+      for (const s of shapes) {
+        if (!refused(s)) leaked.push(`code unit ${u} in ${JSON.stringify(s)}`);
+      }
+    }
+  } finally {
+    Error.stackTraceLimit = stackLimit;
+  }
+  assert.equal(leaked.length, 0, `${leaked.length} strings were accepted, the first: ${leaked.slice(0, 3).join(', ')}`);
+
+  // The other direction: a letter or digit dropped from either class would refuse a real code.
+  const dropped = [];
+  for (const c of alnum) {
+    for (const s of [`a-${c}`, `${c}-a`, c]) if (!accepted(s)) dropped.push(JSON.stringify(s));
+  }
+  // Two hyphens, which a pattern that allows at most one refuses.
+  if (!accepted('a-b-c')) dropped.push('"a-b-c"');
+  assert.equal(dropped.length, 0, `${dropped.length} valid codes were refused, the first: ${dropped.slice(0, 5).join(', ')}`);
+});
+
+test('the clone is full, current and its own', () => {
+  const s = cloneForBumpScript('n8n');
+  const lines = s.split('\n');
+  // Not --depth 1: version-guard compares against a base ref and a shallow clone has no history.
+  assert.doesNotMatch(s, /--depth/, 'a bump needs history that version-guard can compare against');
+  assert.match(s, /clone/);
+  assert.match(s, /--branch main/, 'the same branch the clone, fetch and reset all name');
+  // The whole line, so a dropped `|| exit 1` or an added --shallow-since is a failure and not a pass.
+  const clone = `git clone --branch main https://github.com/InsForge/instacloud-oss.git ${bumpDir('n8n')} || exit 1`;
+  assert.ok(lines.includes(clone), 'the clone line is exactly this, and a failed clone stops the script');
+  // The same for the install, which is the line that runs npm on a box holding a push token.
+  const install = `npm --prefix ${bumpDir('n8n')}/templates install --omit=dev --ignore-scripts --loglevel=error --no-audit --no-fund || exit 1`;
+  assert.ok(lines.includes(install), 'the install line is exactly this, into templates/ of this checkout, and a failed install stops the script');
+  assert.ok(lines.indexOf(clone) < lines.indexOf(install), 'installed after the clone, into the tree it made');
+  // Left over from a previous attempt is the normal case, not the exception.
+  assert.match(s, new RegExp(`rm -rf ${bumpDir('n8n')}`), 'a stale scratch tree is discarded first');
+  assert.ok(s.indexOf('rm -rf') < s.indexOf('clone'), 'discarded before the clone, not after');
+  assert.deepEqual(lines.filter((l) => /\brm\b/.test(l)), [`rm -rf ${bumpDir('n8n')}`], 'the only thing removed is this template\'s own tree');
+  assert.match(s, /install/, 'the patcher needs js-yaml');
+  assert.match(s, /--ignore-scripts/, 'lifecycle scripts do not run on a box holding a push token');
+  assert.ok(!s.includes(REGISTRY_DIR), 'the shared checkout appears nowhere in the script, in any form');
+  const other = cloneForBumpScript('claude-code');
+  assert.ok(other.includes(bumpDir('claude-code')) && !other.includes(bumpDir('n8n')), 'the script is for the code it was given');
+});
+
+test('the bump install runs no lifecycle script either', () => {
+  const npm = cloneForBumpScript('n8n')
+    .split('\n')
+    .filter((l) => /(^|\s)npm\s/.test(l));
+  assert.equal(npm.length, 1, 'one npm command, so the assertion below covers all of them');
+  const scripts = npm[0].split(/\s+/).filter((flag) => flag.includes('scripts'));
+  assert.deepEqual(scripts, ['--ignore-scripts'], 'the flag is given as it is, not negated or set to false');
+});
+
+test('the produced shell parses', () => {
+  execFileSync('sh', ['-n'], { input: cloneForBumpScript('claude-code') });
 });
