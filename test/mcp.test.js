@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleRpc, TOOLS } from '../src/mcp.js';
+import { describeDrift, checkUpstream } from '../src/drift.js';
 
 const config = { agentService: 'claude-code' };
 const rpc = (method, params, deps) => handleRpc(config, { jsonrpc: '2.0', id: 1, method, params }, deps);
@@ -20,6 +21,7 @@ test('every tool says what it is for, and none of them can delete', () => {
   const names = TOOLS.map((t) => t.name).sort();
   assert.deepEqual(names, [
     'ask_for_review',
+    'check_template_upstream',
     'continue_template_pr',
     'follow_job',
     'list_running_jobs',
@@ -32,7 +34,7 @@ test('every tool says what it is for, and none of them can delete', () => {
     'stop_job',
   ]);
   // The box holds a platform key for the whole org. Nothing here may reach it:
-  // a caller can only do these eleven things, whatever it is asked to do.
+  // a caller can only do the things listed above, whatever it is asked to do.
   const surface = JSON.stringify(TOOLS);
   assert.ok(!/delete|remove|destroy/i.test(surface), 'no destructive verb is offered');
   for (const t of TOOLS) assert.ok(t.description.length > 60, `${t.name} explains itself`);
@@ -397,4 +399,256 @@ test('sending says it is outward, needs a person, and what it will refuse', () =
   assert.match(d, /in their language/);
   // And that a second call revises rather than reopens, which is the answer to "I do not like it".
   assert.match(d, /replaces the commit on the same branch/);
+});
+
+// A stub that throws proves nothing when the caller catches what it throws, so these count their
+// calls instead and the count is read after the answer has come back.
+const OTHER_DEPS = ['start', 'read', 'feed', 'steer', 'stop', 'running', 'review', 'reviews', 'openPr'];
+const spied = (names) => {
+  const calls = [];
+  return { calls, deps: Object.fromEntries(names.map((n) => [n, async () => (calls.push(n), {})])) };
+};
+
+// The real detector code, with only the box faked, so the answers a person sees when a question goes
+// wrong are the ones checkUpstream writes and not a stand-in for them.
+const box = (behave) => {
+  const scripts = [];
+  return { scripts, run: async (_c, script) => (scripts.push(script), behave(script)) };
+};
+const viaBox = (run) => ({ drift: (c, codes) => checkUpstream(c, codes, { run }) });
+const surface = () => TOOLS.map((t) => t.name);
+
+test('check_template_upstream answers, and says what to do about it', async () => {
+  const rows = [
+    { code: 'n8n', kind: 'docker-tag', from: '2.36.5', to: '2.41.3', level: 'minor' },
+    { code: 'pi', kind: 'npm', current: true },
+    { code: 'openclaw', kind: 'docker-digest', unknown: 'a digest needs a registry token' },
+  ];
+  let asked = null;
+  let askedWith = null;
+  // A question about the world is not a reason to open, steer, stop or ask anyone for anything.
+  const { calls, deps } = spied(OTHER_DEPS);
+  const out = await rpc(
+    'tools/call',
+    { name: 'check_template_upstream', arguments: {} },
+    { ...deps, drift: async (c, codes) => ((askedWith = c), (asked = codes), { rows }) },
+  );
+  const said = out.result.content[0].text;
+  assert.equal(askedWith, config, 'the box is reached through the same config as every other tool');
+  assert.deepEqual(asked, [], 'no code means the whole registry');
+  assert.deepEqual(calls, [], 'a read only question reaches nothing else, caught or not');
+  assert.match(said, /n8n: 2\.36\.5 -> 2\.41\.3/);
+  // Up to date and unresolved are both answers, and both get said.
+  assert.match(said, /pi: up to date/);
+  assert.match(said, /openclaw: could not be resolved/);
+  assert.match(said, /^1 behind\. \S/m, 'the next step is in the answer, not in a prompt that may be older');
+  assert.equal(said, describeDrift(rows), 'the words are describeDrift over the rows, whole and unadorned');
+  assert.equal(out.result.content.length, 1);
+  assert.equal(out.result.isError, undefined);
+});
+
+test('check_template_upstream asks about one template when it is given one', async () => {
+  let asked = null;
+  await rpc(
+    'tools/call',
+    { name: 'check_template_upstream', arguments: { code: 'n8n' } },
+    { drift: async (_c, codes) => ((asked = codes), { rows: [{ code: 'n8n', current: true }] }) },
+  );
+  assert.deepEqual(asked, ['n8n']);
+});
+
+test('check_template_upstream treats an empty code as no code, not as a template called nothing', async () => {
+  // A model filling in an optional string tends to send "" for "none".
+  let asked = null;
+  await rpc(
+    'tools/call',
+    { name: 'check_template_upstream', arguments: { code: '' } },
+    { drift: async (_c, codes) => ((asked = codes), { rows: [{ code: 'n8n', current: true }] }) },
+  );
+  assert.deepEqual(asked, []);
+});
+
+test('check_template_upstream passes a refusal through as a refusal', async () => {
+  let asked = null;
+  const out = await rpc(
+    'tools/call',
+    { name: 'check_template_upstream', arguments: { code: 'n88n' } },
+    { drift: async (_c, codes) => ((asked = codes), { error: 'There is no template called n88n.' }) },
+  );
+  assert.deepEqual(asked, ['n88n'], 'the refusal is the answer to THIS question, not a stock one');
+  // The text is the refusal itself, verbatim: not describeDrift over nothing, and not a thrown
+  // "failed:" wrapper, both of which would still be an error and still not say why.
+  assert.deepEqual(out.result, {
+    content: [{ type: 'text', text: 'There is no template called n88n.' }],
+    isError: true,
+  });
+});
+
+test('a code that is really an option is refused at this boundary, and the box is never reached', async () => {
+  // The detector's --apply WRITES files on a box that holds push rights. The pattern in drift.js is
+  // what stops it and is tested there, and this says so from where a caller stands.
+  for (const code of ['--apply', '--apply --json', 'n8n --apply', 'n8n; reboot', '$(reboot)', '-h']) {
+    const { scripts, run } = box(() => ({ stdout: '[]' }));
+    const { calls, deps } = spied(OTHER_DEPS);
+    const out = await rpc('tools/call', { name: 'check_template_upstream', arguments: { code } }, { ...deps, ...viaBox(run) });
+    assert.equal(out.result.isError, true, `${code} is refused`);
+    assert.match(out.result.content[0].text, /is not a template code/, code);
+    assert.deepEqual(scripts, [], `${code} must not reach the box`);
+    assert.deepEqual(calls, [], `${code} must not reach anything else either`);
+  }
+});
+
+test('what is sent to the box is the detector in its read only mode, for one template or for all', async () => {
+  for (const [args, tail] of [
+    [{}, /check-upstreams\.mjs --json$/],
+    [{ code: 'n8n' }, /check-upstreams\.mjs --json n8n$/],
+  ]) {
+    const { scripts, run } = box(() => ({ stdout: '[{"code":"n8n","current":true}]\n' }));
+    const out = await rpc('tools/call', { name: 'check_template_upstream', arguments: args }, viaBox(run));
+    assert.equal(out.result.isError, undefined);
+    assert.equal(scripts.length, 1);
+    assert.match(scripts[0], tail);
+    assert.doesNotMatch(scripts[0], /--apply/, 'nothing this tool sends can write');
+  }
+});
+
+test('check_template_upstream is described so that nobody needs a skill to use it', () => {
+  const tool = TOOLS.find((t) => t.name === 'check_template_upstream');
+  const d = tool.description;
+  // What it is, and that asking costs nothing.
+  assert.match(d, /What each published template pins, and what its upstream has released since/);
+  assert.match(d, /Read only/);
+  assert.match(d, /opens nothing and changes nothing/);
+  // How to ask: the whole registry is the default question, and one code narrows it.
+  assert.match(d, /Call it with no code for the whole registry/);
+  assert.match(d, /whenever anyone wonders whether a template is behind/);
+  assert.match(d, /never guessed/, 'an unresolved template is reported as unknown, with the reason');
+  assert.deepEqual(Object.keys(tool.inputSchema.properties), ['code']);
+  assert.ok(!(tool.inputSchema.required ?? []).includes('code'), 'the code is optional, or the whole registry cannot be asked for');
+});
+
+// Hermes tries whatever an answer tells it to call, and an answer that names a tool this server does
+// not offer makes the bot look broken in front of the person who asked. This looks for words shaped
+// like a tool name, in snake_case, kebab-case or camelCase, that are not a tool or an argument on
+// the surface right now, and it reads the surface when it runs so a tool added later counts.
+//
+// What it CAN catch: a multi-word name in any of those three spellings, inside backticks or bare,
+// anywhere in an answer, a refusal, a description or a property description that is scanned below.
+// What it CANNOT: a single word such as `bump`, a name written in Slack italics (_bump_template_,
+// where the underscores read as part of the word), a paraphrase like "the bump tool", or a name in
+// text nobody scans here. The words allowed through are the surface, the codes in the rows, and the
+// two below that have the shape and are not tools, so a tool name that collides with one is missed.
+const NAME_SHAPED = /\b[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+\b|\b[a-z]+(?:[A-Z][a-z0-9]*)+\b/g;
+const snake = (n) => n.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/-/g, '_').toLowerCase();
+const NOT_TOOLS = ['instacloud-oss', 'check-upstreams']; // a repository, and the detector's npm script
+const notOffered = (s, ...codes) => {
+  const fine = new Set(
+    [
+      ...surface(),
+      ...TOOLS.flatMap((t) => Object.keys(t.inputSchema.properties)),
+      ...NOT_TOOLS,
+      ...codes,
+    ].map(snake),
+  );
+  return (s.match(NAME_SHAPED) ?? []).filter((n) => !fine.has(snake(n)));
+};
+
+// notOffered lets a real tool through, so this is the check that an answer names none at all:
+// whether the reader has a tool that moves a pin is the reader's call, and a name here claims it
+// does. It reads the text as snake_case, so `steerJob`, `steer-job` and _steer_job_ all count.
+// Single words are left out on purpose: a tool called `apply`, `diff` or `check` would fire on the
+// correct answer, which has --apply, "the diff" and "This check" in it. A name is also only a name
+// when a letter or digit does not run on from it, so check-upstreams is not check_upstream.
+const namedTools = (s, names = surface()) => {
+  const text = snake(s);
+  return names
+    .map(snake)
+    .filter((n) => n.includes('_') && new RegExp(`(^|[^a-z0-9])${n}($|[^a-z0-9])`).test(text));
+};
+
+test('the check for a tool that is not offered catches every spelling of a name, and passes what is offered', () => {
+  // Without this, the tests below could be green because the check finds nothing at all. The name is
+  // made up on purpose: a real one would stop being absent the day somebody builds it.
+  for (const said of [
+    'frobnicate_widget(code) opens a draft PR',
+    'call frobnicate-widget for it',
+    'call frobnicateWidget for it',
+    'use `frobnicate_widget`',
+  ]) {
+    assert.deepEqual(notOffered(said).map(snake), ['frobnicate_widget'], said);
+  }
+  assert.deepEqual(notOffered('Follow it with follow_job(job_id: "J1", offset: 0, stages: 0).'), []);
+  assert.deepEqual(notOffered('review_status, then ask-for-review, then askForReview'), []);
+  assert.deepEqual(notOffered('run `npm run check-upstreams -- --apply` in templates/ of InsForge/instacloud-oss'), []);
+  assert.deepEqual(notOffered('claude-code: 1 -> 2', 'claude-code'), []);
+});
+
+test('the check for any named tool sees every spelling of a real one, and leaves single words alone', () => {
+  for (const spelling of ['steer_job', 'steer-job', 'steerJob', 'SteerJob', '_steer_job_', '`steer_job`', 'steer_job(job_id: "J1")']) {
+    assert.deepEqual(namedTools(`Tell them, or ${spelling}, for it.`), ['steer_job'], spelling);
+  }
+  const answer = describeDrift([{ code: 'n8n', from: '1', to: '2', level: 'major' }]);
+  const words = ['apply', 'report', 'reports', 'diff', 'pin', 'check', 'this'];
+  assert.deepEqual(namedTools(answer, [...words, 'steer_job']), [], 'the correct answer names no tool');
+  assert.deepEqual(namedTools(`${answer} steerJob`, [...words, 'steer_job']), ['steer_job']);
+  assert.deepEqual(namedTools(answer, ['check_upstream']), [], 'the front of a longer name is not that name');
+});
+
+test('check_template_upstream never names a tool, on the surface or not, whatever it finds', async () => {
+  const shapes = {
+    'one behind, one current, one unresolved': [
+      { code: 'n8n', kind: 'docker-tag', from: '2.36.5', to: '2.41.3', level: 'minor' },
+      { code: 'pi', kind: 'npm', current: true },
+      { code: 'openclaw', kind: 'docker-digest', unknown: 'a digest needs a registry token' },
+    ],
+    'several behind, no level': [
+      { code: 'laya', from: 'c9dcaab', to: 'd113dca', level: null },
+      { code: 'claude-code', from: '1.0.0', to: '2.0.0', level: 'major' },
+    ],
+    'all current': [{ code: 'pi', current: true }],
+    'nothing behind, something unresolved': [
+      { code: 'pi', current: true },
+      { code: 'openclaw', unknown: 'needs a registry token' },
+    ],
+    'no rows at all': [],
+  };
+  for (const [what, rows] of Object.entries(shapes)) {
+    const out = await rpc('tools/call', { name: 'check_template_upstream', arguments: {} }, { drift: async () => ({ rows }) });
+    const said = out.result.content[0].text;
+    assert.ok(said.length > 0 && !out.result.isError, `${what}: there is an answer`);
+    assert.deepEqual(notOffered(said, ...rows.map((r) => r.code)), [], `${what}: names a tool nobody can call`);
+    assert.deepEqual(namedTools(said), [], `${what}: names a tool, and whether the reader has it is not this server's to say`);
+  }
+});
+
+test('the answers a person sees when the question goes wrong name no tool that is not on the surface either', async () => {
+  const gone = (fields) => () => {
+    throw Object.assign(new Error('Command failed: the whole refresh script, which says nothing'), fields);
+  };
+  const cases = [
+    ['a code that cannot be one', { code: 'Not A Code' }, null, /is not a template code/],
+    ['an option in the code slot', { code: '--apply' }, null, /'--apply' is not a template code/],
+    ['a template that is not there', { code: 'n88n' }, gone({ code: 2, stderr: 'no such template: n88n\n' }), /There is no template called n88n/],
+    ['a registry with nothing in it', {}, () => ({ stdout: '[]\n' }), /no templates at all/],
+    ['an answer that is not json', {}, () => ({ stdout: 'fatal: unable to access the repository' }), /did not answer with json/],
+    ['a run that was killed', {}, gone({ killed: true, signal: 'SIGTERM' }), /was killed/],
+    ['a run that failed with output', {}, gone({ code: 1, stderr: 'npm ERR! missing script' }), /exit code 1/],
+  ];
+  for (const [what, args, behave, shows] of cases) {
+    const { scripts, run } = box(behave ?? (() => ({ stdout: '[]' })));
+    const out = await rpc('tools/call', { name: 'check_template_upstream', arguments: args }, viaBox(run));
+    const said = out.result.content[0].text;
+    assert.equal(out.result.isError, true, `${what}: is a refusal`);
+    assert.match(said, shows, `${what}: says what went wrong`);
+    assert.equal(scripts.length, behave ? 1 : 0, `${what}: the box is reached exactly when the question was well formed`);
+    assert.deepEqual(notOffered(said), [], `${what}: names a tool nobody can call`);
+  }
+});
+
+test('the tool describes itself without naming a tool that is not on the surface', () => {
+  const tool = TOOLS.find((t) => t.name === 'check_template_upstream');
+  const words = [tool.description, ...Object.values(tool.inputSchema.properties).map((p) => p.description)];
+  assert.equal(words.length, 2, 'the description and the one property');
+  // claude-code is the example template code the property gives, which is not a tool.
+  for (const w of words) assert.deepEqual(notOffered(w, 'claude-code'), [], w);
 });

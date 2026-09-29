@@ -147,7 +147,12 @@ export function describeDrift(rows) {
   });
   let next = '\n\nNothing is behind.';
   if (behind.length) {
-    next = `\n\n${behind.length} behind. bump_template(code) opens a draft PR for one of them, with a running instance to try.`;
+    // The reader sees its own tools and this file cannot, so nothing here names one or denies one.
+    next =
+      `\n\n${behind.length} behind. This check only reports. ` +
+      "If none of your tools moves a template's pin, a person runs `npm run check-upstreams -- --apply` " +
+      'in templates/ of InsForge/instacloud-oss, reads the diff and opens the pull request. ' +
+      'Tell them which are behind, from the lines above.';
   } else if (unresolved.length) {
     // "Nothing is behind" would be false comfort: those are the ones nobody could look at.
     next = `\n\nNothing is known to be behind, but ${unresolved.map((r) => r.code).join(', ')} could not be checked.`;

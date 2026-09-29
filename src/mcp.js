@@ -1,6 +1,7 @@
 import { startJob, readJob, jobFeed, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
 import { askForReview, reviewStatus } from './review.js';
 import { openUpstreamPr } from './upstream.js';
+import { checkUpstream, describeDrift } from './drift.js';
 
 // The job-control layer, offered to a conversational agent as MCP tools.
 //
@@ -8,7 +9,7 @@ import { openUpstreamPr } from './upstream.js';
 // an insta credential that can exec into a machine holding a GitHub token, and
 // an agent with a terminal tool would be able to use that credential directly,
 // straight past every guard below. Keeping the credential on this side means
-// the only reachable surface is these six calls, and they refuse.
+// the only reachable surface is whatever TOOLS lists below.
 const PROTOCOL_VERSION = '2025-06-18';
 
 // Descriptions are written for the caller to read. A tool that explains what it
@@ -145,6 +146,20 @@ const TOOLS = [
     },
   },
   {
+    name: 'check_template_upstream',
+    description:
+      'What each published template pins, and what its upstream has released since. Read only, a few seconds, one or two HTTP calls per template: it opens nothing and changes nothing. Call it with no code for the whole registry, which is the cheap question worth asking whenever anyone wonders whether a template is behind. A template it cannot resolve is reported as unknown with the reason, never guessed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        code: {
+          type: 'string',
+          description: 'One template code, like n8n or claude-code. Leave it out for all of them.',
+        },
+      },
+    },
+  },
+  {
     name: 'stop_job',
     description:
       'End a job. Anything it already pushed stays pushed and nothing is reverted, so this abandons rather than undoes. Steering is almost always the better answer; stop only when the work should not continue at all.',
@@ -170,6 +185,7 @@ async function callTool(config, name, args, deps) {
     review = askForReview,
     reviews = reviewStatus,
     openPr = openUpstreamPr,
+    drift = checkUpstream,
   } = deps;
 
   // The job never posts anywhere itself. Whoever started it follows it and does
@@ -344,6 +360,12 @@ async function callTool(config, name, args, deps) {
       } catch (error) {
         return failure(`Could not offer ${code || '(no code)'} upstream: ${error.message.slice(0, 300)}`);
       }
+    }
+
+    case 'check_template_upstream': {
+      const { rows, error } = await drift(config, args?.code ? [String(args.code)] : []);
+      if (error) return failure(error);
+      return text(describeDrift(rows));
     }
 
     case 'stop_job':

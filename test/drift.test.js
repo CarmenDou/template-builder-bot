@@ -383,6 +383,16 @@ test('through the real exec path, an unknown name and a missing binary are both 
   assert.doesNotMatch(missing.error, /\(nothing\)/);
 });
 
+// What follows the count in a behind answer, whole. Hermes can see its own tools and this server
+// cannot, so the sentence is a condition on them and asserts nothing about them. It has been wrong
+// four times by a clause that did: one named a tool, one denied a tool, one affirmed one, and one
+// was slipped in between the parts a partial match looks at. So it is compared whole, and rewording
+// it fails here on purpose: changing it should take a decision and not a drive-by.
+const AFTER_COUNT =
+  "This check only reports. If none of your tools moves a template's pin, a person runs " +
+  '`npm run check-upstreams -- --apply` in templates/ of InsForge/instacloud-oss, reads the diff ' +
+  'and opens the pull request. Tell them which are behind, from the lines above.';
+
 test('the lines name what moved, and end with the move that follows', () => {
   const said = describeDrift([
     { code: 'n8n', from: '2.36.5', to: '2.41.3', level: 'minor' },
@@ -395,23 +405,40 @@ test('the lines name what moved, and end with the move that follows', () => {
   assert.match(said, /^openclaw: could not be resolved, needs a registry token$/m);
   // One is behind: not the three rows, and not the two that are not current.
   assert.match(said, /^1 behind\. /m);
-  // The contract rides in the return value: Hermes caches its system prompt per session, so a
-  // thread older than this tool would otherwise never learn what comes next.
-  assert.match(said, /bump_template/);
+  // Every word of it, once: nothing inserted, removed or reworded anywhere.
+  assert.equal(
+    said,
+    [
+      'n8n: 2.36.5 -> 2.41.3  minor',
+      'pi: up to date',
+      'openclaw: could not be resolved, needs a registry token',
+      '',
+      `1 behind. ${AFTER_COUNT}`,
+    ].join('\n'),
+  );
+  // Whatever the rows are, the sentence is the same one: nothing in it depends on a level or a count.
+  assert.equal(
+    describeDrift([
+      { code: 'n8n', from: '1.0.0', to: '2.0.0', level: 'major' },
+      { code: 'laya', from: 'c9dcaab', to: 'd113dca', level: null },
+    ]),
+    ['n8n: 1.0.0 -> 2.0.0  major', 'laya: c9dcaab -> d113dca  changed, not comparable', '', `2 behind. ${AFTER_COUNT}`].join('\n'),
+  );
   // A commit sha has no level, and calling it a patch would be an invention.
   assert.match(
     describeDrift([{ code: 'laya', from: 'c9dcaab', to: 'd113dca', level: null }]),
     /^laya: c9dcaab -> d113dca {2}changed, not comparable$/m,
   );
-  assert.match(describeDrift([{ code: 'pi', current: true }]), /Nothing is behind/);
+  // A clean day has nothing to advise about, and is compared whole for the same reason.
+  assert.equal(describeDrift([{ code: 'pi', current: true }]), 'pi: up to date\n\nNothing is behind.');
 });
 
 test('with no templates at all it does not call the registry clean', () => {
   // Not reachable through checkUpstream, which refuses an empty list, but describeDrift is exported
   // and an empty array must not print the line that means every template was looked at.
   const said = describeDrift([]);
-  assert.match(said, /No templates were found, so nothing was checked\./);
-  assert.doesNotMatch(said, /Nothing is behind|bump_template|behind/i);
+  assert.equal(said, 'No templates were found, so nothing was checked.');
+  assert.doesNotMatch(said, /Nothing is behind|only reports|behind/i);
 });
 
 test('when nothing is behind but something could not be checked, it says so', () => {
@@ -422,9 +449,17 @@ test('when nothing is behind but something could not be checked, it says so', ()
     { code: 'openclaw', unknown: 'needs a registry token' },
     { code: 'other', unknown: 'no network' },
   ]);
-  assert.match(said, /Nothing is known to be behind, but openclaw, other could not be checked\./);
   assert.doesNotMatch(said, /Nothing is behind/);
-  assert.doesNotMatch(said, /bump_template/);
+  assert.equal(
+    said,
+    [
+      'pi: up to date',
+      'openclaw: could not be resolved, needs a registry token',
+      'other: could not be resolved, no network',
+      '',
+      'Nothing is known to be behind, but openclaw, other could not be checked.',
+    ].join('\n'),
+  );
   // A row that says both is current, as its own line says, and is not counted as unchecked.
   const both = describeDrift([{ code: 'pi', current: true, unknown: 'stale' }]);
   assert.match(both, /^pi: up to date$/m);
