@@ -838,6 +838,8 @@ test('bump_template is described so that nobody needs a skill to use it', () => 
   // The patcher reads live registries, so the same command later can write a different patch.
   assert.doesNotMatch(d, /deterministic/);
   assert.match(d, /It does NOT deploy the result and nothing verifies that the template still works, so never say it was tested/);
+  // What the push does besides open a pull request: the tool is not only "a draft, nothing deployed".
+  assert.match(d, /so never say it was tested\. Pushing the branch also runs that repository's image build, which publishes container images to GHCR under tags for the branch and commit, and because a new branch has no base to compare against, that first run rebuilds every template that ships its own image\. It first asks/);
   // It asks before it pushes, and what it answers when the answer is yes.
   assert.match(d, /first asks whether a bump pull request for this template is already open/);
   assert.match(d, /answers with that link and pushes and opens nothing/);

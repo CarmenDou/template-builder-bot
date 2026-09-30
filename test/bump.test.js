@@ -8,7 +8,7 @@ import { dirname, join, posix } from 'node:path';
 import vm from 'node:vm';
 import { execInBox } from '../src/agent.js';
 import { REGISTRY_DIR, bumpDir, cloneForBumpScript } from '../src/registry.js';
-import { VERSION, bumpBranch, bumpScript, findOpenBump, findOpenBumpScript, openBumpPr, openPrScript, prBody, readApply, runBump } from '../src/bump.js';
+import { LEVEL, VERSION, bumpBranch, bumpScript, findOpenBump, findOpenBumpScript, openBumpPr, openPrScript, prBody, readApply, runBump } from '../src/bump.js';
 
 // What the patcher printed for a real run of `--json --apply n8n`, kept whole: the extra fields are
 // part of the shape, and a reader that leaked them or leaned on them would otherwise pass.
@@ -312,6 +312,42 @@ test('the reader refuses a version that is not a plain one, in any of the four, 
   assert.equal(reader(JSON.stringify([{ ...N8N, applied: true }])).status, ANSWER);
   // And the ordinary version passes in every one of the four.
   for (const field of FIELDS) assert.deepEqual(reader(JSON.stringify([withField(field, '1.0.0-rc.1+build.5')])).status, 0, field);
+});
+
+// A level goes into a public pull request and a chat reply. The detector says major, minor or patch,
+// or null for a move it cannot order, and a row without one is the same as null.
+const LEVEL_UNSAFE = 'the patcher gave a level that is not safe to put in a pull request\n';
+const BAD_LEVELS = ['minor\n\n## Verified', 'minor\n', 'MINOR', ' minor', 'minor)', '', '[x](https://example.com)', '`id`', '$(id)', 'ｍinor'];
+const NOT_STRING_LEVELS = [0, 2, true, false, ['minor'], { a: 1 }];
+
+test('the reader refuses a level that is not a plain word before anything is pushed, and takes the ones the detector names', () => {
+  for (const bad of [...BAD_LEVELS, ...NOT_STRING_LEVELS]) {
+    const r = reader(JSON.stringify([{ ...N8N, level: bad }]));
+    assert.deepEqual(r, { status: ANSWER, stdout: '', stderr: LEVEL_UNSAFE }, JSON.stringify(bad));
+  }
+  for (const level of ['major', 'minor', 'patch', null]) {
+    assert.deepEqual(reader(JSON.stringify([{ ...N8N, level }])), { status: 0, stdout: '2.36.5 2.42.0\n', stderr: '' }, String(level));
+  }
+  const { level: _gone, ...noLevel } = N8N;
+  assert.equal(reader(JSON.stringify([noLevel])).status, 0, 'a row without one is the same as null');
+  // A version that is not safe still says so as before, and is not taken for a level.
+  assert.equal(reader(JSON.stringify([{ ...N8N, to: '2\n3', level: 'minor' }])).stderr, UNSAFE);
+});
+
+test('the reader takes exactly the level LEVEL does, and LEVEL is lowercase letters and nothing else', () => {
+  const chars = [...Array(128).keys(), 0x85, 0xa0, 0x2028, 0x2029, 0xfeff, 0xe9, 0xff4d].map((c) => String.fromCharCode(c));
+  for (const ch of chars) {
+    for (const shape of [ch, `a${ch}`, `${ch}a`, `a${ch}a`]) {
+      const r = reader(JSON.stringify([{ ...N8N, level: shape }]));
+      assert.equal(r.status, LEVEL.test(shape) ? 0 : ANSWER, JSON.stringify(shape));
+    }
+  }
+  for (let c = 0; c < 0x10000; c++) {
+    const ch = String.fromCharCode(c);
+    if (LEVEL.test(`a${ch}a`) !== /[a-z]/.test(ch)) assert.fail(`U+${c.toString(16)}`);
+  }
+  assert.ok(!LEVEL.test('') && LEVEL.test('minor') && !LEVEL.test('minor\n'), 'not empty, and no trailing line slips past the anchor');
+  assert.equal(LEVEL.global || LEVEL.sticky || LEVEL.multiline, false);
 });
 
 test('the reader accepts exactly the characters VERSION does, in each position, over all of ASCII and the line breaks', () => {
@@ -732,6 +768,25 @@ test('run for real: a version that is not a plain one never reaches a branch, a 
   assert.deepEqual((await readdir(sb.root)).filter((n) => n === 'pwned'), [], 'nothing in any of them ran');
 });
 
+test('run for real: a level that is not a plain word never reaches a branch, and the refusal does not claim one', async (t) => {
+  // The script pushes before the JS reads the row, so a level refused only there would be an error
+  // over a branch that is already on the remote, saying nothing of it.
+  const sb = await sandbox(t);
+  for (const bad of [...BAD_LEVELS, ...NOT_STRING_LEVELS]) {
+    const env = { STUB_PATCHER_OUT: printed({ ...N8N, level: bad }), STUB_PATCHER_TOUCH: 'n8n/insta.template.yaml' };
+    const label = JSON.stringify(bad);
+    const [out, r] = await both(sb, 'n8n', env);
+    assert.equal(r.status, 0, `${label}: the refusal is an answer`);
+    assert.ok(!r.calls.some((c) => /^git (checkout|add|commit|push)/.test(c)), `${label}: nothing was committed or pushed`);
+    assert.equal(r.calls.at(-1), 'node -e [held]', `${label}: it stops at the reader`);
+    assert.match(r.stderr, /level that is not safe to put in a pull request/, label);
+    assert.deepEqual(Object.keys(out), ['error'], label);
+    assert.match(out.error, /the level .* is not a plain word/, label);
+    assert.doesNotMatch(out.error, /pushed/, `${label}: nothing was, so it does not say so`);
+  }
+  assert.deepEqual(branches(sb), ['main']);
+});
+
 test('run for real: a branch an earlier attempt left is replaced, and a plain push would have been refused', async (t) => {
   // A pull request that was closed leaves its branch behind. That is the ordinary case.
   const sb = await sandbox(t);
@@ -947,6 +1002,7 @@ const OUTCOMES = [
   { what: 'the lock held by another bump', status: 0, keys: ['error'], env: () => ({ ...PATCH, STUB_FLOCK_EXIT: '1' }) },
   { what: 'no such template', status: 0, keys: ['error'], code: 'scripts', env: () => PATCH },
   ...FIELDS.map((f) => ({ what: `a ${f} that is not safe`, status: 0, keys: ['error'], env: () => ({ ...only(withField(f, BAD)), STUB_PATCHER_TOUCH: PATCH.STUB_PATCHER_TOUCH }) })),
+  { what: 'a level that is not safe', status: 0, keys: ['error'], env: () => ({ ...only({ ...N8N, level: { a: 1 } }), STUB_PATCHER_TOUCH: PATCH.STUB_PATCHER_TOUCH }) },
   {
     what: 'a lost lease',
     status: 0,
@@ -1208,6 +1264,14 @@ test('runBump: a version that is not a plain one is an error even if the box say
   assert.equal(out.applied, undefined);
 });
 
+test('runBump: a level that is not a plain word is an error even if the box says it pushed', async () => {
+  const bad = printed({ ...N8N, level: { a: 1 } });
+  const out = await runBump({}, 'n8n', { run: answering({ stdout: `${bad}\nPUSHED feat/n8n-2.42.0\n`, stderr: '' }) });
+  assert.match(out.error, /the level .* is not a plain word/);
+  assert.equal(out.branch, undefined);
+  assert.equal(out.applied, undefined);
+});
+
 test('runBump: an answer about another template is not read as ours', async () => {
   const out = await runBump({}, 'pi', { run: answering({ stdout: `${printed(N8N)}\nPUSHED ${PUSHED}\n`, stderr: '' }) });
   assert.match(out.error, /answered about 'n8n' when asked about 'pi'/);
@@ -1264,6 +1328,15 @@ test('an unresolved template is an error with its reason, and is not read as cur
   assert.equal(readApply(printed({ code: 'pi', unknown: 'no route', current: true }), 'pi').error, 'pi could not be resolved: no route');
   assert.equal(readApply(printed({ code: 'pi', unknown: 'no route', refused: 'no' }), 'pi').error, 'pi could not be resolved: no route');
   assert.deepEqual(readApply(printed({ code: 'pi', refused: 'no', current: true }), 'pi'), { refused: 'no', code: 'pi' });
+  // `unknown` lands in a chat reply exactly as `refused` does, so it is bounded and never printed
+  // as [object Object]. These were two lines that had drifted, and only one had been tightened.
+  const huge = readApply(printed({ code: 'pi', unknown: 'x'.repeat(5000) }), 'pi').error;
+  assert.ok(huge.length < 500, `a reason is cut, not sent whole: ${huge.length}`);
+  for (const odd of [{ why: 'no token' }, ['no token'], 7, true]) {
+    const said = readApply(printed({ code: 'pi', unknown: odd }), 'pi').error;
+    assert.doesNotMatch(said, /\[object Object\]/, `a reason that is not text still reads: ${JSON.stringify(odd)}`);
+    assert.match(said, /^pi could not be resolved: /);
+  }
 });
 
 test('a template that is behind and was neither patched nor refused is an error, as when --apply is lost', () => {
@@ -1315,6 +1388,35 @@ test('a version that is not a plain one is refused whichever of the four it is',
   assert.match(readApply(printed(noFrom), 'n8n').error, /upstream from version undefined is not a plain version string/);
   // Only the four a patch hands on are read. A refusal and a current row hand on none.
   assert.equal(readApply(printed({ ...LAYA, applied: undefined, refused: 'no', to: '1\n2' }), 'laya').refused, 'no');
+});
+
+test('a level that is not a plain word is refused, and null and the three the detector names are not', () => {
+  for (const bad of [...BAD_LEVELS, ...NOT_STRING_LEVELS]) {
+    const out = readApply(printed({ ...N8N, level: bad }), 'n8n');
+    assert.match(out.error, /^n8n: the level .* is not a plain word, so it is not put in a pull request\.$/, JSON.stringify(bad));
+    assert.deepEqual(Object.keys(out), ['error'], JSON.stringify(bad));
+  }
+  for (const level of ['major', 'minor', 'patch']) assert.equal(readApply(printed({ ...N8N, level }), 'n8n').applied.level, level);
+  assert.equal(readApply(printed({ ...N8N, level: null }), 'n8n').applied.level, null);
+  // What is refused is not echoed whole into a chat reply.
+  assert.ok(readApply(printed({ ...N8N, level: `${'x'.repeat(5000)}!` }), 'n8n').error.length < 200);
+  // Only a patch hands a level on. A refusal and a current row do not, so theirs is not read.
+  assert.equal(readApply(printed({ ...LAYA, applied: undefined, refused: 'no', level: { a: 1 } }), 'laya').refused, 'no');
+});
+
+// A reason is written by the patcher and lands in a chat reply. A failed push is cut at 400 for the
+// same reason, and that is what `TAIL` is.
+test('a refusal reaches a chat reply, so its reason is cut at the length a failed push is', () => {
+  const refusal = (reason) => readApply(printed({ ...LAYA, applied: undefined, refused: reason }), 'laya');
+  const whole = 'r'.repeat(400);
+  assert.deepEqual(refusal(whole), { refused: whole, code: 'laya' }, 'a reason that fits is whole');
+  assert.deepEqual(refusal(`${whole}x`), { refused: whole, code: 'laya' }, 'and one character more is cut');
+  assert.equal(refusal('y'.repeat(100000)).refused.length, 400);
+  // Not text at all is still text, still cut, and never "[object Object]".
+  const odd = refusal({ deep: 'z'.repeat(1000) });
+  assert.equal(typeof odd.refused, 'string');
+  assert.ok(odd.refused.length <= 400 && !/\[object/.test(odd.refused));
+  assert.deepEqual(Object.keys(odd), ['refused', 'code']);
 });
 
 test('VERSION is exactly letters, digits, dot, underscore, plus and hyphen, all of them, and nothing else', () => {
@@ -1524,6 +1626,21 @@ test('the body says plainly what was not done, and claims nothing was deployed, 
   assert.doesNotMatch(body, /checks that ran|have run|has run/i, 'nothing has run when a draft is opened');
 });
 
+test('the body says the push also runs the image build, next to the sentence about CI', () => {
+  // The sentence about lint and version-guard reads as everything CI does with the branch, and it is
+  // not: the push publishes container images to GHCR, and a reviewer should not learn that later.
+  for (const applied of [APPLIED, LAYA_APPLIED]) {
+    const body = prBody(applied);
+    assert.match(
+      body,
+      /pending when it is opened\. Pushing this branch also runs the repository's image build, which publishes container images to GHCR under tags for this branch and commit\. A new branch has no base commit to compare against, so that first run rebuilds every template that ships its own image, not only this one\.\n?$/,
+      `${applied.code}: right after the CI sentence, and the last thing in the body`,
+    );
+    // Only that sentence was added: the CI sentence itself is the one it was.
+    assert.match(body, /The repository's own checks, `npm run lint` and `npm run version-guard`, run in CI on this pull request and are pending when it is opened\./);
+  }
+});
+
 test('the pull request is a DRAFT against main, from the branch that was pushed, and the body write must succeed first', () => {
   const s = openPrScript('n8n', APPLIED, PUSHED);
   assert.match(s, /--draft/, 'never a ready-for-review pull request');
@@ -1578,6 +1695,13 @@ test('openPrScript splices values into a shell command and a title, so it refuse
     assert.throws(() => openPrScript('n8n', changed((a) => { a.version.to = bad; }), PUSHED), /the template to version .* is not a plain version string/, `template to ${JSON.stringify(bad)}`);
   }
   assert.throws(() => openPrScript('n8n', changed((a) => { delete a.upstream; }), PUSHED), /the upstream from version undefined is not a plain version string/, 'a missing field is a refusal and not a TypeError');
+  // The level is in the public body, so it is a word or nothing, here as in readApply.
+  for (const bad of [...BAD_LEVELS, ...NOT_STRING_LEVELS]) {
+    assert.throws(() => openPrScript('n8n', changed((a) => { a.level = bad; }), PUSHED), /the level .* is not a plain word, so it is not put in a pull request/, JSON.stringify(bad));
+  }
+  for (const level of ['major', 'minor', 'patch', null, undefined]) {
+    assert.doesNotThrow(() => openPrScript('n8n', changed((a) => { a.level = level; }), PUSHED), String(level));
+  }
   // The branch is the one this tool names, and no other, whatever is handed in.
   for (const bad of ['feat/n8n-2.42.0; id', 'feat/n8n-2.42.0 --base other', `${PUSHED}\n`, 'feat/pi-2.42.0', 'feat/n8n-2.41.3', 'main', '', undefined, null, 42]) {
     assert.throws(() => openPrScript('n8n', APPLIED, bad), /is not the branch a bump of n8n to 2\.42\.0 is pushed to/, JSON.stringify(bad));
@@ -1689,13 +1813,39 @@ test('not being able to ask whether one is open is not a licence to open one', a
   const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, {
     run: asking((s) => (isCreate(s) ? { stdout: `${NEW_PR}\n` } : rejected('', 'gh: API rate limit exceeded\n')), calls),
   });
-  assert.match(out.error, /^Could not ask whether a bump is already open: gh: API rate limit exceeded/);
+  // And it says the branch is pushed, because by the time it asks here it is.
+  assert.match(out.error, /^The branch is pushed but the pull request was not opened: Could not ask whether a bump is already open: gh: API rate limit exceeded/);
   assert.equal(calls.length, 1, 'and gh was not asked to create anything');
   assert.equal(out.url, undefined);
   // The same when the answer is not a link.
   const odd = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: asking((s) => ({ stdout: isCreate(s) ? `${NEW_PR}\n` : 'Welcome\n' }), calls) });
-  assert.match(odd.error, /not a pull request url/);
+  assert.match(odd.error, /^The branch is pushed but the pull request was not opened: gh answered with something that is not a pull request url/);
   assert.equal(calls.length, 2);
+});
+
+test('every way openBumpPr can fail after the push says the branch is pushed, in the same words', async () => {
+  // The caller pushed before it got here, so a failure that leaves that out leaves a branch nobody
+  // knows to look for. Each way it can end in an error is listed, and none may drop the clause.
+  // What openPrScript refuses is not here: that runs before anything is sent and no push is claimed.
+  const limited = rejected('', 'gh: API rate limit exceeded\n');
+  const denied = rejected('', 'GraphQL: Resource not accessible by personal access token\n');
+  const killed = rejected('', '', { killed: true, signal: 'SIGTERM' });
+  const created = { stdout: `${NEW_PR}\n` };
+  const nothing = { stdout: '' };
+  const ways = {
+    'the question failed': (s) => (isCreate(s) ? created : limited),
+    'the question was killed': (s) => (isCreate(s) ? created : killed),
+    'the question got something that is not a link': (s) => (isCreate(s) ? created : { stdout: 'Welcome\n' }),
+    'the create was refused': (s) => (isCreate(s) ? denied : nothing),
+    'the create was killed': (s) => (isCreate(s) ? killed : nothing),
+    'the create printed nothing': () => nothing,
+    'the create printed the link of another repository': (s) => (isCreate(s) ? { stdout: 'https://github.com/other/repo/pull/9\n' } : nothing),
+  };
+  for (const [what, answer] of Object.entries(ways)) {
+    const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: asking(answer) });
+    assert.deepEqual(Object.keys(out), ['error'], what);
+    assert.match(out.error, /^The branch is pushed but (the pull request was not opened|gh did not print a pull request url)/, what);
+  }
 });
 
 test('a pull request that could not be opened says the branch is pushed, and why', async () => {

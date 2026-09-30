@@ -151,10 +151,18 @@ export function describeDrift(rows) {
   let next = '\n\nNothing is behind.';
   if (behind.length) {
     // The reader sees its own tools and this file cannot, so nothing here names one or denies one.
+    // The example code is checked against CODE for the reason the comment on CODE gives: this is a
+    // command a person is told to run, and `readDrift` reads rows out of noisy box output rather
+    // than validating them. A row that does not carry a plain code gets the placeholder.
+    // Type first, then the pattern, as every other check on this branch does. Coercing instead
+    // lets a number through: `String(7)` matches CODE, because a code may contain digits.
+    const first = behind[0].code;
+    const example = typeof first === 'string' && CODE.test(first) ? first : '<code>';
     next =
       `\n\n${behind.length} behind. This check only reports. ` +
-      "If none of your tools moves a template's pin, a person runs `npm run check-upstreams -- --apply` " +
-      'in templates/ of InsForge/instacloud-oss, reads the diff and opens the pull request. ' +
+      "If none of your tools moves a template's pin, a person runs " +
+      `\`npm run check-upstreams -- --apply ${example}\` in templates/ of InsForge/instacloud-oss ` +
+      "(with each template's own code, one at a time), reads the diff and opens the pull request. " +
       'Tell them which are behind, from the lines above.';
   } else if (unresolved.length) {
     // "Nothing is behind" would be false comfort: those are the ones nobody could look at.

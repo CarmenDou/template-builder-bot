@@ -13,10 +13,13 @@ import { execInBox } from './agent.js';
 import { readDrift } from './drift.js';
 import { bumpDir, cloneForBumpScript } from './registry.js';
 
-// Seconds to wait for another bump of the same template. The channel cuts a command off at about 31
-// seconds and drift.js kills at 28, so the wait and the work after it have to fit. Measured end to
-// end against the real repository the patch takes 2.5 to 5.4 seconds (n8n slowest, on its registry
-// calls), so 15 leaves 13 for it and the commit and push, and outlasts a whole run in front. The
+// Seconds to wait for another bump of the same template. The lock is taken before the clone, so the
+// clone, the install, the patch, the commit and the push are all inside it, and inside the 28 second
+// kill below (the channel cuts a command off at about 31 and drift.js kills at 28 too). Measured on
+// the box against the real repository: clone 5 seconds, install 1, the patch 2.5 to 5.4 (n8n slowest,
+// on its registry calls; the read only detector over all eleven templates takes 2). A run in front
+// is about 9 to 11 seconds before its push, which 15 outlasts. A caller that waits the whole 15 has
+// 13 left for a 5 second clone, a 1 second install, a patch and a push: tight, not impossible. The
 // push to GitHub itself has not been timed.
 const LOCK_WAIT_SECONDS = 15;
 
@@ -25,6 +28,15 @@ const TIMEOUT_MS = 28000;
 
 // What an error says of a failed push, and this lands in a chat reply.
 const TAIL = 400;
+
+/**
+ * A reason off the patcher's row, made fit to put in a chat reply.
+ *
+ * One function for both `refused` and `unknown`, because they are the same thing: text the patcher
+ * wrote about one template that a person reads. They were two lines that had drifted, and the one
+ * that was never tightened printed `[object Object]` for a non-string and had no length at all.
+ */
+const reason = (said) => (typeof said === 'string' ? said : inspect(said)).slice(0, TAIL);
 
 // The one sentence the script prints when another bump of the same template holds the lock.
 const LOCKED = /^could not take the bump lock for \S+ in \d+ seconds, another bump is running$/m;
@@ -39,6 +51,10 @@ const LOCKED = /^could not take the bump lock for \S+ in \d+ seconds, another bu
  */
 export const VERSION = /^[A-Za-z0-9._+-]+$/;
 
+// What a level may be wherever one is handed on. The detector says major, minor or patch, or null
+// for a move it cannot order, and the level goes into a public pull request and a chat reply.
+export const LEVEL = /^[a-z]+$/;
+
 /**
  * The branch a bump is pushed to: the template and the upstream version it moves to.
  *
@@ -52,9 +68,10 @@ const ANSWERED = 10;
 
 // Prints `<from> <to>` for the one row that says it patched this template, and nothing else. A row
 // about this template that says it is current, refused or unresolved is an answer, and so is a
-// patch with a version that is not safe, which also says why: exit ANSWERED. Everything else, no
-// rows, two rows, another template's row, a row that says nothing, is a fault: exit 1. All four
-// versions are checked because the script is about to push, and readApply only sees them after.
+// patch with a version or a level that is not safe, which also says why: exit ANSWERED. Everything
+// else, no rows, two rows, another template's row, a row that says nothing, is a fault: exit 1. All
+// four versions and the level are checked because the script is about to push, and readApply only
+// sees them after: a level refused there would leave a pushed branch behind an error that says none.
 const readVersions = (code) =>
   [
     'let rows = [];',
@@ -65,6 +82,7 @@ const readVersions = (code) =>
     'if (!row.applied) process.exit(1);',
     `const safe = (v) => typeof v === "string" && ${VERSION}.test(v);`,
     `if (![row.from, row.to, row.applied.from, row.applied.to].every(safe)) { console.error("the patcher gave a version that is not safe to name a branch after"); process.exit(${ANSWERED}); }`,
+    `if (row.level != null && !(typeof row.level === "string" && ${LEVEL}.test(row.level))) { console.error("the patcher gave a level that is not safe to put in a pull request"); process.exit(${ANSWERED}); }`,
     'console.log(row.from + " " + row.to);',
   ].join(' ');
 
@@ -150,13 +168,14 @@ export function bumpScript(code) {
  * `code` is the template that was asked for, and a row about another one is refused: it would
  * otherwise read as ours.
  *
- * A refusal is an answer and carries its reason. With `--apply <code>` the patcher looks only at
+ * A refusal is an answer and carries its reason, cut at TAIL. With `--apply <code>` the patcher looks only at
  * that template, so it exits 1 only when that one could not be resolved and 0 when it patched or
  * refused, and a caller must read the output whatever the exit code was.
  *
  * The version strings of a patch are refused unless they match VERSION. They reach a branch name
  * and a commit subject, and later a pull request, so this is the one place they are checked in JS.
- * The script checks the two it uses itself as well, because it acts on them before this runs.
+ * The script checks the two it uses itself as well, because it acts on them before this runs. The
+ * level is a string matching LEVEL or null, for the same public places, and the script checks it too.
  *
  * `cause` is what to say when there are no rows at all and the caller knows why, as `readDrift` takes.
  */
@@ -176,8 +195,8 @@ export function readApply(stdout, code, cause) {
     return { error: `The patcher answered about ${inspect(row.code).slice(0, 60)} when asked about ${inspect(code).slice(0, 60)}, so this is not an answer about the template that was asked for.` };
   }
   // Before `current`: not being able to look is not the same as having nothing to do.
-  if (row.unknown) return { error: `${row.code} could not be resolved: ${row.unknown}` };
-  if (row.refused) return { refused: row.refused, code: row.code };
+  if (row.unknown) return { error: `${row.code} could not be resolved: ${reason(row.unknown)}` };
+  if (row.refused) return { refused: reason(row.refused), code: row.code };
   if (row.current) return { current: true, code: row.code };
   if (!row.applied) {
     // Only a row that names a move can be behind. An empty one says nothing at all.
@@ -198,11 +217,15 @@ export function readApply(stdout, code, cause) {
       return { error: `${row.code}: the ${what} version ${inspect(v).slice(0, 60)} is not a plain version string, so it is not put in a branch name or a commit.` };
     }
   }
+  const level = row.level ?? null;
+  if (level !== null && (typeof level !== 'string' || !LEVEL.test(level))) {
+    return { error: `${row.code}: the level ${inspect(level).slice(0, 60)} is not a plain word, so it is not put in a pull request.` };
+  }
   return {
     applied: {
       code: row.code,
       kind: row.kind,
-      level: row.level ?? null,
+      level,
       upstream: { from: row.from, to: row.to },
       version: { from: row.applied.from, to: row.applied.to },
     },
@@ -359,7 +382,12 @@ export async function findOpenBump(config, code, deps = {}) {
  *
  * It names no file. The patcher's row says what moved and not which files it wrote (n8n has no
  * Dockerfile, for one), and the diff is right there in the pull request for anyone who wants the
- * list. For the same reason it says nothing about how the result deploys.
+ * list. For the same reason it says nothing about how the result deploys. It does say that the push
+ * runs the image build, or the sentence about CI would read as everything CI does with the branch.
+ * That build resolves which templates to rebuild from the pushed commit's base, and a new branch
+ * has none, so the first push of every bump rebuilds all of them. Checked on the real workflow,
+ * not assumed: `templates-build-images.yml` falls back to `buildable()` when `github.event.before`
+ * does not resolve.
  *
  * The command is the one a person would type and names the template, because without it the line
  * tells a reviewer to patch every template in the registry. The `--json` the bump adds is for the
@@ -386,7 +414,10 @@ export function prBody(applied) {
     '',
     '**This has not been deployed and nothing has verified that it still works.** The repository\'s own'
       + ' checks, `npm run lint` and `npm run version-guard`, run in CI on this pull request and are'
-      + ' pending when it is opened.',
+      + ' pending when it is opened. Pushing this branch also runs the repository\'s image build, which'
+      + ' publishes container images to GHCR under tags for this branch and commit. A new branch has no'
+      + ' base commit to compare against, so that first run rebuilds every template that ships its own'
+      + ' image, not only this one.',
   ].join('\n');
 }
 
@@ -414,6 +445,10 @@ export function openPrScript(code, applied, branch) {
   };
   for (const [what, v] of Object.entries(versions)) {
     if (typeof v !== 'string' || !VERSION.test(v)) throw new Error(`the ${what} version ${inspect(v).slice(0, 60)} is not a plain version string, so it is not put in a pull request`);
+  }
+  // The level is in the public body too, and a hand-built patch has none or null.
+  if (applied.level != null && (typeof applied.level !== 'string' || !LEVEL.test(applied.level))) {
+    throw new Error(`the level ${inspect(applied.level).slice(0, 60)} is not a plain word, so it is not put in a pull request`);
   }
   if (branch !== bumpBranch(code, applied)) {
     throw new Error(`${inspect(branch).slice(0, 100)} is not the branch a bump of ${code} to ${applied.upstream.to} is pushed to`);
@@ -443,14 +478,18 @@ const alreadyOpen = (found, branch) => (found.head === branch ? { existing: foun
  *
  * It asks whether one is open although its caller may have asked before pushing. That costs one
  * `gh pr list` and closes the gap between that question and this pull request. When it could not
- * ask, it opens nothing.
+ * ask, it opens nothing, and says the branch is pushed as every failure after a push here does.
  *
  * A create that failed is followed by one more look before it is called a failure. Over ssh
  * `execInBox` runs the whole script again after a rejection, so a create that succeeded and then
  * lost the connection runs twice, and the second is refused because a pull request for that branch
  * exists. Saying it was not opened would then be false, and would send a person to open it.
  *
- * What is refused by `openPrScript` is refused before anything is sent, the question included.
+ * What `openPrScript` refuses is the one error here that does NOT say the branch is pushed, and
+ * the reason is that it cannot be reached with one pushed: through `bump_template` every value it
+ * checks was already checked by the in-script reader and `readApply` before the push happened. It
+ * is not that nothing has been sent yet, which is untrue by this point. A caller that pushed by
+ * some other route and then came here would need that clause.
  */
 export async function openBumpPr(config, code, applied, branch, deps = {}) {
   const { run = execInBox } = deps;
@@ -461,7 +500,8 @@ export async function openBumpPr(config, code, applied, branch, deps = {}) {
     return { error: e.message };
   }
   const open = await findOpenBump(config, code, deps);
-  if (open.error) return open;
+  // Not being able to ask still comes after the push, so it says the branch is there like the rest.
+  if (open.error) return { error: `The branch is pushed but the pull request was not opened: ${open.error}` };
   if (open.existing) return alreadyOpen(open, branch);
 
   // What to answer when the create did not give a link. The create's own error stays the answer

