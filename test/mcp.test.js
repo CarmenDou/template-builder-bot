@@ -526,7 +526,14 @@ test('check_template_upstream is described so that nobody needs a skill to use i
   assert.doesNotMatch(d, /changes nothing|opens nothing/, 'a call changes the checkout on the box');
   // How to ask: the whole registry is the default question, and one code narrows it.
   assert.match(d, /Call it with no code for the whole registry/);
-  assert.match(d, /whenever anyone wonders whether a template is behind/);
+  assert.match(d, /whenever nobody has named a template/);
+  // A named template belongs to bump_template, whatever the wording. Observed live: with the two
+  // routes split by what the question MEANT, "can n8n be updated" matched both, the agent took the
+  // read-only one, and then asked permission to bump. Splitting on whether a template was NAMED is
+  // a test it cannot misread, and it is stated here as well as in the skill because an agent that
+  // finds the two disagreeing will follow whichever suits it.
+  assert.match(d, /When somebody HAS named one, call bump_template instead, whatever the wording/);
+  assert.doesNotMatch(d, /wonders whether a template is behind/, 'that wording invited the check for a named template');
   assert.match(d, /never guessed/, 'an unresolved template is reported as unknown, with the reason');
   assert.deepEqual(Object.keys(tool.inputSchema.properties), ['code']);
   assert.ok(!(tool.inputSchema.required ?? []).includes('code'), 'the code is optional, or the whole registry cannot be asked for');

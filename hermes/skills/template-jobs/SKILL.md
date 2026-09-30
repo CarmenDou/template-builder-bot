@@ -20,10 +20,17 @@ and you are the only one who talks about it in the conversation. The job itself 
 - Someone gives you a GitHub repository to make into a template
 - Someone asks for a change to a template pull request on `InsForge/instacloud-oss`
 - Someone asks how a template job is going, or wants it to change course
-- Someone asks whether a template is behind its upstream, or which templates are: `check_template_upstream`
-- Someone asks for a template to be updated, or asks whether one *can* be: `bump_template`. Asking
-  whether n8n can be updated is asking for it to be, so answer with the draft pull request, not with
-  a version number and a suggestion that they go and run something.
+- Someone asks about templates in general, naming none: `check_template_upstream`. "Which templates
+  are behind", "anything to update this week".
+- **Someone names ONE template, however they word it: `bump_template`.** "Update n8n", "can n8n be
+  updated", "is n8n behind", "what's n8n on" all go here. The test is whether a template was named,
+  not how the sentence was phrased.
+
+  **Do not answer with a version number, and do not ask whether to go ahead.** Naming a template is
+  the request. Call `bump_template` and answer with what it returns, which is a pull request link.
+  There is nothing to confirm first: what it opens is a DRAFT that nobody has to merge, it opens
+  nothing at all when a bump is already open, and it never deploys. Asking permission turns one
+  message into three and is the experience this tool exists to replace.
 
 ## Starting
 
