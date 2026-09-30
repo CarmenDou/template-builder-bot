@@ -443,7 +443,14 @@ test('check_template_upstream answers, and says what to do about it', async () =
   assert.match(said, /pi: up to date/);
   assert.match(said, /openclaw: could not be resolved/);
   assert.match(said, /^1 behind\. \S/m, 'the next step is in the answer, not in a prompt that may be older');
-  assert.equal(said, describeDrift(rows), 'the words are describeDrift over the rows, whole and unadorned');
+  // The rows are describeDrift's words, unadorned. Only the tail is this server's, because only
+  // this server knows what it offers.
+  assert.ok(said.startsWith(describeDrift(rows).split('\n\n')[0]), 'the rows are describeDrift, unchanged');
+  assert.match(said, /^1 behind\. Call bump_template for each of them, ONE AT A TIME/m);
+  assert.match(said, /Do not ask whether to go ahead/, 'the reason it need not ask travels with the instruction');
+  // Observed live: with drift.js's fallback reaching an agent that HAS the bump tool, it read
+  // "This check only reports", reported, and asked the person for permission it did not need.
+  assert.doesNotMatch(said, /This check only reports|a person runs/, 'the no-tool fallback must not reach a caller that has one');
   assert.equal(out.result.content.length, 1);
   assert.equal(out.result.isError, undefined);
 });
@@ -628,8 +635,19 @@ test('check_template_upstream never names a tool, on the surface or not, whateve
     const out = await rpc('tools/call', { name: 'check_template_upstream', arguments: {} }, { drift: async () => ({ rows }) });
     const said = out.result.content[0].text;
     assert.ok(said.length > 0 && !out.result.isError, `${what}: there is an answer`);
+    // Still the rule that matters: never a tool the reader cannot call. A rename of bump_template
+    // that left this sentence stale fails here, which is the whole worry behind the spec's
+    // "the answer names no tool".
     assert.deepEqual(notOffered(said, ...rows.map((r) => r.code)), [], `${what}: names a tool nobody can call`);
-    assert.deepEqual(namedTools(said), [], `${what}: names a tool, and whether the reader has it is not this server's to say`);
+    // The broader rule, name NOTHING, belongs to drift.js, which cannot see the surface. This
+    // server is the surface, so it may name the one tool that acts, and only when there is
+    // something to act on.
+    const behind = rows.filter((r) => r.to && !r.current && !r.unknown).length;
+    assert.deepEqual(
+      namedTools(said),
+      behind ? ['bump_template'] : [],
+      `${what}: names the acting tool only when something is behind`,
+    );
   }
 });
 
