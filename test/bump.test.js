@@ -8,7 +8,7 @@ import { dirname, join, posix } from 'node:path';
 import vm from 'node:vm';
 import { execInBox } from '../src/agent.js';
 import { REGISTRY_DIR, bumpDir, cloneForBumpScript } from '../src/registry.js';
-import { VERSION, bumpBranch, bumpScript, readApply, runBump } from '../src/bump.js';
+import { VERSION, bumpBranch, bumpScript, findOpenBump, findOpenBumpScript, openBumpPr, openPrScript, prBody, readApply, runBump } from '../src/bump.js';
 
 // What the patcher printed for a real run of `--json --apply n8n`, kept whole: the extra fields are
 // part of the shape, and a reader that leaked them or leaned on them would otherwise pass.
@@ -33,6 +33,14 @@ const LAYA = {
 };
 const OPENCLAW = { code: 'openclaw', kind: 'docker-digest', unknown: 'a tag pinned by digest needs a registry token to re-resolve' };
 const printed = (...rows) => JSON.stringify(rows, null, 2);
+// What `readApply` makes of the N8N row, and what `runBump` hands on: the shape everything after the patch takes.
+const APPLIED = {
+  code: 'n8n',
+  kind: 'docker-tag',
+  level: 'minor',
+  upstream: { from: '2.36.5', to: '2.42.0' },
+  version: { from: '1.3.2', to: '1.4.0' },
+};
 
 const IDENTITY = 'template-builder <carmen.dou@insforge.dev>';
 const SUBJECT = 'n8n 2.36.5 -> 2.42.0';
@@ -624,16 +632,7 @@ test('run for real: runBump hands on what was applied and the branch that is on 
   const sb = await sandbox(t);
   const seen = [];
   const out = await bump(sb, 'n8n', PATCH, seen);
-  assert.deepEqual(out, {
-    applied: {
-      code: 'n8n',
-      kind: 'docker-tag',
-      level: 'minor',
-      upstream: { from: '2.36.5', to: '2.42.0' },
-      version: { from: '1.3.2', to: '1.4.0' },
-    },
-    branch: PUSHED,
-  });
+  assert.deepEqual(out, { applied: APPLIED, branch: PUSHED });
   assert.ok(branches(sb).includes(out.branch), 'the branch it names is on the remote');
   assert.equal(out.branch, bumpBranch('n8n', out.applied));
   assert.deepEqual(seen.map(({ config, opts }) => ({ config, opts })), [{ config: { box: 'config' }, opts: { timeoutMs: 28000 } }], 'one exec, with the box config and our own kill');
@@ -916,10 +915,7 @@ test('run for real: through the real execInBox, with nothing injected but the in
   const via = async (sb, env) => ({ instaBin: await instaStandIn(sb, env), agentService: 'claude-code', agentProjectId: 'a-project' });
 
   const sb = await sandbox(t);
-  assert.deepEqual(await runBump(await via(sb, PATCH), 'n8n'), {
-    applied: { code: 'n8n', kind: 'docker-tag', level: 'minor', upstream: { from: '2.36.5', to: '2.42.0' }, version: { from: '1.3.2', to: '1.4.0' } },
-    branch: PUSHED,
-  });
+  assert.deepEqual(await runBump(await via(sb, PATCH), 'n8n'), { applied: APPLIED, branch: PUSHED });
   assert.deepEqual(branches(sb), [PUSHED, 'main']);
 
   const refused = { ...N8N, applied: undefined, refused: 'the Dockerfile does not hold it' };
@@ -1221,15 +1217,7 @@ test('runBump: an answer about another template is not read as ours', async () =
 // ---- reading the answer -------------------------------------------------------------------------
 
 test('a patched template reports what moved, upstream and ours, each the right way round', () => {
-  assert.deepEqual(readApply(printed(N8N), 'n8n'), {
-    applied: {
-      code: 'n8n',
-      kind: 'docker-tag',
-      level: 'minor',
-      upstream: { from: '2.36.5', to: '2.42.0' },
-      version: { from: '1.3.2', to: '1.4.0' },
-    },
-  });
+  assert.deepEqual(readApply(printed(N8N), 'n8n'), { applied: APPLIED });
   // A commit has no level, and that is null and not a missing field.
   const laya = readApply(printed(LAYA), 'laya').applied;
   assert.equal(laya.level, null);
@@ -1394,4 +1382,416 @@ test('the words the script itself prints are read as answers', () => {
   assert.match(readApply(`x ${sentence}\n`, 'n8n').error, /did not answer with json/, 'and only when it is a line of its own');
   assert.match(readApply(`${sentence} and more\n`, 'n8n').error, /did not answer with json/, 'the whole line');
   assert.equal(readApply('no such template: scripts\n', 'scripts').error, 'There is no template called scripts.');
+});
+
+// ---- the pull request ---------------------------------------------------------------------------
+//
+// Nothing here reaches GitHub. Either `gh` is a stub `run`, or the script itself is run in a real
+// shell with the box's `gh` and `/tmp` rewritten to a stand-in binary and a directory of ours.
+
+const GH = '/data/home/bin/gh';
+const OPEN = 'https://github.com/InsForge/instacloud-oss/pull/191';
+const NEW_PR = 'https://github.com/InsForge/instacloud-oss/pull/192';
+const NOT_CODES = ['--apply', '-x', '', '../registry', 'n8n; rm -rf /', 'n8n\n--apply', "a'b", '$(id)', 'N8N', null, undefined, ['n8n'], 42];
+
+// Runs `script` under sh with a `gh` that records the arguments it was given, copies the file it was
+// told to read the body from, prints what it is told to and exits as it is told to. `argv` is null
+// when gh never ran, and that is how a test says "never".
+async function withGh(t, script, { stdout = '', stderr = '', status = 0, brokenBase64 = false } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'bump-pr-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  assert.ok(script.includes(GH), 'the script calls the gh on the box');
+  await put(join(dir, 'gh'), [
+    '#!/bin/sh',
+    `printf '%s\\n' "$@" > ${dir}/argv`,
+    `while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cat "$2" > ${dir}/body; shift; done`,
+    'printf "%s" "$STUB_OUT"',
+    'printf "%s" "$STUB_ERR" >&2',
+    'exit "$STUB_STATUS"',
+  ].join('\n'), 0o755);
+  // Shadows the base64 on PATH, for the run where writing the body fails part way.
+  if (brokenBase64) await put(join(dir, 'base64'), '#!/bin/sh\nexit 1\n', 0o755);
+  const rewritten = script.replaceAll(GH, `${dir}/gh`).replaceAll('/tmp/', `${dir}/`);
+  assert.ok(!rewritten.includes('/data/home'), 'and never the real one');
+  const r = spawnSync('/bin/sh', ['-c', rewritten], {
+    encoding: 'utf8',
+    env: { PATH: `${dir}:/usr/bin:/bin`, STUB_OUT: stdout, STUB_ERR: stderr, STUB_STATUS: String(status) },
+  });
+  const read = (name) => readFile(join(dir, name), 'utf8').catch(() => null);
+  const argv = await read('argv');
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr, argv: argv === null ? null : argv.trimEnd().split('\n'), body: await read('body'), dir };
+}
+
+test('an open bump pull request for this template is found by its branch, not by its title', () => {
+  const s = findOpenBumpScript('n8n');
+  assert.match(s, /gh/);
+  assert.match(s, /InsForge\/instacloud-oss/);
+  assert.match(s, /feat\/n8n-/, 'the branch prefix this tool creates, so somebody else\'s PR is not ours');
+  assert.match(s, /state=open|--state open/);
+  assert.doesNotMatch(s, /title/i, 'a reviewer retypes a title, and then a second pull request would be opened');
+  assert.throws(() => findOpenBumpScript('n8n; id'), /not a template code/);
+});
+
+test('the find refuses anything but a template code before text is built', () => {
+  for (const bad of NOT_CODES) assert.throws(() => findOpenBumpScript(bad), /is not a template code/, JSON.stringify(bad));
+});
+
+test('run for real: the find asks gh for open pull requests, and its exit status is gh\'s', async (t) => {
+  const asked = await withGh(t, findOpenBumpScript('n8n'), { stdout: `${OPEN} ${PUSHED}\n` });
+  assert.equal(asked.status, 0);
+  assert.equal(asked.stdout, `${OPEN} ${PUSHED}\n`, 'what gh printed is what the script prints');
+  assert.deepEqual(asked.argv.slice(0, 6), ['pr', 'list', '--repo', 'InsForge/instacloud-oss', '--state', 'open']);
+  // The value, not the flag: `--limit 1` has the flag and would miss an open bump behind any other
+  // recent pull request, and then a second one is opened on a public repository.
+  assert.equal(asked.argv[asked.argv.indexOf('--limit') + 1], '100', 'gh lists thirty by default, and an open bump beyond that would not be found');
+  // A gh that failed is a failure. Piped through `head`, its status would be head's, an empty answer
+  // would read as "none open", and the next thing that ran would be `pr create`.
+  const failed = await withGh(t, findOpenBumpScript('n8n'), { stderr: 'gh: Bad credentials\n', status: 4 });
+  assert.equal(failed.status, 4);
+  assert.equal(failed.stdout, '');
+});
+
+const jqMissing = spawnSync('jq', ['--version']).status !== 0;
+
+test('run for real: the filter keeps this template\'s bump branches and nothing else', { skip: jqMissing && 'jq is not installed' }, async (t) => {
+  const { argv } = await withGh(t, findOpenBumpScript('n8n'));
+  const filter = argv[argv.indexOf('--jq') + 1];
+  const pr = (n, headRefName) => ({ url: `https://github.com/InsForge/instacloud-oss/pull/${n}`, headRefName });
+  const listed = [
+    pr(190, 'feat/pi-1.0.0'),
+    pr(191, 'feat/n8n-2.41.3'),
+    pr(189, 'fix/n8n-typo'),
+    pr(188, 'n8n-2.0.0'),
+    pr(187, 'feat/n8n'),
+    pr(186, 'feat/n8n-2.30.0'),
+  ];
+  const r = spawnSync('jq', ['-r', filter], { input: JSON.stringify(listed), encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.stdout.trim().split('\n'), [`${listed[1].url} feat/n8n-2.41.3`, `${listed[5].url} feat/n8n-2.30.0`], 'each with the branch it is from');
+});
+
+test('the pull request says what a reviewer has to know', () => {
+  const body = prBody(APPLIED);
+  assert.deepEqual([...body.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['What', 'How', 'Verify']);
+  assert.match(body, /2\.36\.5/);
+  assert.match(body, /2\.42\.0/);
+  assert.match(body, /\(minor\)/);
+  assert.match(body, /1\.3\.2 -> 1\.4\.0/, 'our template version moved too, and by how much');
+  assert.match(body, /npm run check-upstreams -- --apply n8n/, 'the diff is machine-made, and the body says by what, for which template');
+  assert.doesNotMatch(body, /--json/, 'that flag is for the machine that reads the answer, not for a person');
+  assert.doesNotMatch(body, /deterministic/i, 'the patcher resolves the upstream over live APIs, so the same command later can write a different patch');
+  assert.match(body, /no\s+person or agent wrote any of it/, 'what the sentence is for');
+  assert.doesNotMatch(body, /Co-Authored-By|Generated with/i);
+  assert.match(prBody({ ...APPLIED, code: 'pi' }), /npm run check-upstreams -- --apply pi\b/, 'the code is the template\'s, not a fixed one');
+  assert.doesNotMatch(prBody({ ...APPLIED, level: null }), /null|undefined|\(\)/, 'a commit has no level, and the sentence has no hole where it was');
+});
+
+// Two templates of different kinds, because what the patcher wrote differs by kind and by template.
+const LAYA_APPLIED = {
+  code: 'laya',
+  kind: 'git-commit',
+  level: null,
+  upstream: { from: 'c9dcaab6da74ce5c34a66ef84f2503c77e4e619a', to: 'd113dca2512fb3eaca313534bc54c7162d87c1d4' },
+  version: { from: '0.2.0', to: '0.2.1' },
+};
+
+test('the body names no file, because the row does not say which files the patcher wrote', () => {
+  // n8n has no Dockerfile. A body that said one moved would be wrong on the first real pull request.
+  for (const applied of [APPLIED, LAYA_APPLIED]) {
+    const body = prBody(applied);
+    assert.doesNotMatch(body, /Dockerfile|manifest|README|logo|lockfile|package\.json|insta\.template/i, applied.code);
+    assert.doesNotMatch(body, /\b[\w.-]+\.(ya?ml|json|md|mjs|cjs|js|ts|svg|png|toml|lock|txt)\b/i, `${applied.code}: nothing that looks like a file name`);
+    assert.doesNotMatch(body, /image tag|only pushed from/i, `${applied.code}: nor how the result deploys, which the row does not say either`);
+  }
+});
+
+test('the body says plainly what was not done, and claims nothing was deployed, tested or verified', () => {
+  const STRONG = /\*\*This has not been deployed and nothing has verified that it still works\.\*\*/;
+  for (const applied of [APPLIED, LAYA_APPLIED]) {
+    const body = prBody(applied);
+    // The whole sentence, not any weaker one that also says "not been deployed".
+    assert.match(body, STRONG, applied.code);
+    // With that sentence taken out, nothing left claims a result. "Unit tested" is about the patcher.
+    const rest = body.replace(STRONG, '');
+    assert.doesNotMatch(rest, /deployed|verified|validated|smoke|staging/i, `${applied.code}: nothing else claims a deploy or a verification`);
+    assert.doesNotMatch(rest, /\btested\b(?! in this repository)/i, `${applied.code}: nor a test of this change`);
+    assert.doesNotMatch(rest, /\b(passed|passes|works|working|succeeded|green)\b/i, `${applied.code}: nor a result`);
+  }
+  // The checks are pending when a draft is opened. Nothing has run.
+  const body = prBody(APPLIED);
+  assert.match(body, /`npm run lint` and `npm run version-guard`/);
+  assert.match(body, /pending when it is opened/);
+  assert.doesNotMatch(body, /checks that ran|have run|has run/i, 'nothing has run when a draft is opened');
+});
+
+test('the pull request is a DRAFT against main, from the branch that was pushed, and the body write must succeed first', () => {
+  const s = openPrScript('n8n', APPLIED, PUSHED);
+  assert.match(s, /--draft/, 'never a ready-for-review pull request');
+  assert.match(s, /--base main/);
+  assert.match(s, / --head feat\/n8n-2\.42\.0 /);
+  assert.match(s, /--repo InsForge\/instacloud-oss/);
+  assert.match(s, /--title 'n8n 2\.36\.5 -> 2\.42\.0'/);
+  assert.match(s, /--body-file \/tmp\/bump-n8n\.md/);
+  const lines = s.split('\n');
+  assert.equal(lines.length, 2);
+  const write = /^printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \/tmp\/bump-n8n\.md \|\| exit 1$/.exec(lines[0]);
+  assert.ok(write, `a body that fails to write stops the script before gh is asked to open anything: ${lines[0].slice(0, 80)}`);
+  assert.equal(Buffer.from(write[1], 'base64').toString('utf8'), prBody(APPLIED), 'the body is what prBody says, whole');
+  assert.match(lines[1], /^\/data\/home\/bin\/gh pr create /);
+  assert.equal(spawnSync('sh', ['-n'], { input: s, encoding: 'utf8' }).status, 0);
+});
+
+test('run for real: gh is given a draft, a title and the body whole, quotes and backticks and all', async (t) => {
+  const r = await withGh(t, openPrScript('n8n', APPLIED, PUSHED), { stdout: `${NEW_PR}\n` });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, `${NEW_PR}\n`);
+  assert.deepEqual(r.argv, [
+    'pr', 'create', '--repo', 'InsForge/instacloud-oss', '--draft', '--base', 'main', '--head', PUSHED,
+    '--title', 'n8n 2.36.5 -> 2.42.0', '--body-file', `${r.dir}/bump-n8n.md`,
+  ]);
+  assert.equal(r.body, prBody(APPLIED));
+  assert.match(r.body, /`/);
+  assert.match(r.body, /repository's/);
+});
+
+test('run for real: a body that could not be written is never opened as a pull request', async (t) => {
+  const r = await withGh(t, openPrScript('n8n', APPLIED, PUSHED), { stdout: `${NEW_PR}\n`, brokenBase64: true });
+  assert.notEqual(r.status, 0);
+  assert.equal(r.argv, null, 'gh never ran, so no pull request was opened with half a body');
+  assert.equal(r.stdout, '');
+});
+
+test('openPrScript splices values into a shell command and a title, so it refuses each that is not what it should be', () => {
+  const changed = (edit) => {
+    const a = structuredClone(APPLIED);
+    edit(a);
+    return a;
+  };
+  for (const bad of NOT_CODES) assert.throws(() => openPrScript(bad, APPLIED, PUSHED), /is not a template code/, JSON.stringify(bad));
+  assert.throws(() => openPrScript('pi', APPLIED, 'feat/pi-2.42.0'), /is for 'n8n', not for pi/, 'a patch for one template is not opened as another\'s');
+  assert.throws(() => openPrScript('n8n', undefined, PUSHED), /is for undefined, not for n8n/);
+  const unsafe = ["2.42.0'; id", '2.42.0\n\nCo-Authored-By: x', '2.42.0 --base other', '', undefined, null, 42, ['2.42.0']];
+  for (const bad of unsafe) {
+    assert.throws(() => openPrScript('n8n', changed((a) => { a.upstream.from = bad; }), PUSHED), /the upstream from version .* is not a plain version string/, `from ${JSON.stringify(bad)}`);
+    assert.throws(() => openPrScript('n8n', changed((a) => { a.upstream.to = bad; }), PUSHED), /the upstream to version .* is not a plain version string/, `to ${JSON.stringify(bad)}`);
+    assert.throws(() => openPrScript('n8n', changed((a) => { a.version.from = bad; }), PUSHED), /the template from version .* is not a plain version string/, `template from ${JSON.stringify(bad)}`);
+    assert.throws(() => openPrScript('n8n', changed((a) => { a.version.to = bad; }), PUSHED), /the template to version .* is not a plain version string/, `template to ${JSON.stringify(bad)}`);
+  }
+  assert.throws(() => openPrScript('n8n', changed((a) => { delete a.upstream; }), PUSHED), /the upstream from version undefined is not a plain version string/, 'a missing field is a refusal and not a TypeError');
+  // The branch is the one this tool names, and no other, whatever is handed in.
+  for (const bad of ['feat/n8n-2.42.0; id', 'feat/n8n-2.42.0 --base other', `${PUSHED}\n`, 'feat/pi-2.42.0', 'feat/n8n-2.41.3', 'main', '', undefined, null, 42]) {
+    assert.throws(() => openPrScript('n8n', APPLIED, bad), /is not the branch a bump of n8n to 2\.42\.0 is pushed to/, JSON.stringify(bad));
+  }
+  assert.doesNotThrow(() => openPrScript('n8n', APPLIED, PUSHED));
+  assert.doesNotThrow(() => openPrScript('claude-code', { ...APPLIED, code: 'claude-code' }, 'feat/claude-code-2.42.0'));
+});
+
+// ---- findOpenBump and openBumpPr, with the exec stood in for ------------------------------------
+
+// A `run` that records every call and answers each from `answer(script)`: a result, or an Error to throw.
+const asking = (answer, calls = []) => async (...args) => {
+  calls.push(args);
+  const result = answer(args[1]);
+  if (result instanceof Error) throw result;
+  return result;
+};
+const isCreate = (script) => /pr create/.test(script);
+
+test('findOpenBump says whether one is open: its link, nothing, or why it could not tell', async () => {
+  const calls = [];
+  const find = (result) => findOpenBump({ the: 'config' }, 'n8n', { run: asking(() => result, calls) });
+  assert.deepEqual(await find({ stdout: `${OPEN}\n` }), { existing: OPEN }, 'a bare link has no branch to report');
+  assert.deepEqual(calls[0], [{ the: 'config' }, findOpenBumpScript('n8n'), { timeoutMs: 28000 }], 'one exec, with the config and our own kill');
+  assert.deepEqual(await find({ stdout: `${OPEN} feat/n8n-2.41.3\n` }), { existing: OPEN, head: 'feat/n8n-2.41.3' }, 'and the branch it is from, when the script gave one');
+  assert.deepEqual(await find({ stdout: `${OPEN} feat/n8n-2.41.3\nhttps://github.com/InsForge/instacloud-oss/pull/150 feat/n8n-2.30.0\n` }), { existing: OPEN, head: 'feat/n8n-2.41.3' }, 'the first');
+  assert.deepEqual(await find({ stdout: '' }), {});
+  assert.deepEqual(await find({ stdout: '\n' }), {});
+  assert.deepEqual(await find({}), {}, 'no output at all is none open');
+  assert.equal(calls.length, 6);
+});
+
+test('findOpenBump: a gh that fails, or says something that is not a link, is an error and never "none open"', async () => {
+  const find = (result) => findOpenBump({}, 'n8n', { run: asking(() => result) });
+  const failed = await find(rejected('', 'gh: Bad credentials\n'));
+  assert.deepEqual(Object.keys(failed), ['error']);
+  assert.match(failed.error, /^Could not ask whether a bump is already open: gh: Bad credentials\.$/);
+  assert.match((await find(rejected('', '', { killed: true, signal: 'SIGTERM' }))).error, /the run was killed by SIGTERM/);
+  for (const stdout of ['Welcome to the box\n', 'https://github.com/other/repo/pull/191\n', `${OPEN}/files\n`, 'https://github.com/InsForge/instacloud-oss/issues/191\n', `x ${OPEN}\n`, `${OPEN} feat/n8n-2.41.3 and more\n`]) {
+    const said = await find({ stdout });
+    assert.match(said.error, /not a pull request url/, JSON.stringify(stdout));
+    assert.deepEqual(Object.keys(said), ['error']);
+  }
+});
+
+test('findOpenBump: a code that is not a template code runs nothing and says so', async () => {
+  for (const bad of NOT_CODES) {
+    let ran = false;
+    const out = await findOpenBump({}, bad, { run: async () => { ran = true; return { stdout: '' }; } });
+    assert.match(out.error, /is not a template code/, JSON.stringify(bad));
+    assert.equal(ran, false, 'nothing was sent to the box');
+  }
+});
+
+test('an already open bump answers with its link and opens nothing', async () => {
+  let opened = false;
+  const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, {
+    run: async (_c, script) => {
+      if (/pr create/.test(script)) { opened = true; return { stdout: '' }; }
+      return { stdout: `${OPEN}\n` };
+    },
+  });
+  assert.equal(out.existing, OPEN);
+  assert.equal(opened, false, 'never a second pull request');
+});
+
+test('an open pull request that is not on the branch just pushed says that branch has none', async () => {
+  const answerWith = async (stdout) => {
+    const calls = [];
+    const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: asking((s) => ({ stdout: isCreate(s) ? '' : stdout }), calls) });
+    assert.equal(calls.filter(([, s]) => isCreate(s)).length, 0, 'and nothing was opened');
+    return out;
+  };
+  // An older bump is still open, and the branch pushed for this one has no pull request of its own.
+  assert.deepEqual(await answerWith(`${OPEN} feat/n8n-2.41.3\n`), { existing: OPEN, stranded: PUSHED });
+  // The pull request is on this very branch, which a push to it has just updated: nothing is stranded.
+  assert.deepEqual(await answerWith(`${OPEN} ${PUSHED}\n`), { existing: OPEN });
+  // No branch in the answer, so it cannot be said that this one has a pull request.
+  assert.deepEqual(await answerWith(`${OPEN}\n`), { existing: OPEN, stranded: PUSHED });
+});
+
+test('with none open, it opens one and returns the url', async () => {
+  const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, {
+    run: async (_c, script) => ({ stdout: /pr create/.test(script) ? `${NEW_PR}\n` : '' }),
+  });
+  assert.equal(out.url, NEW_PR);
+  assert.deepEqual(Object.keys(out), ['url']);
+});
+
+test('it asks first and opens second, each once, with the config and our own kill', async () => {
+  const calls = [];
+  const out = await openBumpPr({ the: 'config' }, 'n8n', APPLIED, PUSHED, { run: asking((s) => ({ stdout: isCreate(s) ? `${NEW_PR}\n` : '' }), calls) });
+  assert.equal(out.url, NEW_PR);
+  assert.deepEqual(calls, [
+    [{ the: 'config' }, findOpenBumpScript('n8n'), { timeoutMs: 28000 }],
+    [{ the: 'config' }, openPrScript('n8n', APPLIED, PUSHED), { timeoutMs: 28000 }],
+  ]);
+});
+
+test('gh failing is an answer with its reason, not a crash', async () => {
+  const thrown = Object.assign(new Error('Command failed'), { stdout: '', stderr: 'gh: Bad credentials\n' });
+  const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: async () => { throw thrown; } });
+  assert.match(out.error, /Bad credentials/);
+  assert.equal(out.url, undefined);
+});
+
+test('not being able to ask whether one is open is not a licence to open one', async () => {
+  const calls = [];
+  const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, {
+    run: asking((s) => (isCreate(s) ? { stdout: `${NEW_PR}\n` } : rejected('', 'gh: API rate limit exceeded\n')), calls),
+  });
+  assert.match(out.error, /^Could not ask whether a bump is already open: gh: API rate limit exceeded/);
+  assert.equal(calls.length, 1, 'and gh was not asked to create anything');
+  assert.equal(out.url, undefined);
+  // The same when the answer is not a link.
+  const odd = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: asking((s) => ({ stdout: isCreate(s) ? `${NEW_PR}\n` : 'Welcome\n' }), calls) });
+  assert.match(odd.error, /not a pull request url/);
+  assert.equal(calls.length, 2);
+});
+
+test('a pull request that could not be opened says the branch is pushed, and why', async () => {
+  const create = (result) => openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: asking((s) => (isCreate(s) ? result : { stdout: '' })) });
+  const failed = await create(rejected('', 'GraphQL: Resource not accessible by personal access token\n'));
+  assert.match(failed.error, /^The branch is pushed but the pull request was not opened: GraphQL: Resource not accessible/);
+  assert.doesNotMatch(failed.error, /may have been opened/);
+  assert.deepEqual(Object.keys(failed), ['error']);
+  // A run that was killed may have got as far as creating it, so it cannot say there is none.
+  const killed = await create(rejected('', '', { killed: true, signal: 'SIGTERM' }));
+  assert.match(killed.error, /the run was killed by SIGTERM before it finished/);
+  assert.match(killed.error, /may have been opened before that, so look at the repository before trying again/);
+  for (const stdout of ['', 'created it\n', 'https://github.com/other/repo/pull/9\n']) {
+    const said = await create({ stdout });
+    assert.match(said.error, /^The branch is pushed but gh did not print a pull request url/, JSON.stringify(stdout));
+    assert.equal(said.url, undefined);
+  }
+});
+
+// A gh that says nothing of the pull request until the create has been tried, and then reports it:
+// what the box looks like after a create that succeeded and then lost its connection, and was run
+// again by `execInBox`. `created` is what the create does, and the list answers by whether it ran.
+const afterCreate = (created, listed = `${OPEN} ${PUSHED}\n`, calls = []) => {
+  let ran = false;
+  return {
+    calls,
+    run: asking((s) => {
+      if (isCreate(s)) {
+        ran = true;
+        return created;
+      }
+      return ran ? { stdout: listed } : { stdout: '' };
+    }, calls),
+  };
+};
+const alreadyExists = () => rejected('', `a pull request for branch "${PUSHED}" into branch "main" already exists:\n${OPEN}\n`);
+
+test('a create that failed after it had worked is not called a failure: one more look finds the pull request', async () => {
+  const box = afterCreate(alreadyExists());
+  const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: box.run });
+  assert.deepEqual(out, { existing: OPEN }, 'it is on the branch just pushed, so nothing is stranded');
+  assert.deepEqual(box.calls.map(([, s]) => (isCreate(s) ? 'create' : 'list')), ['list', 'create', 'list'], 'one more look, and only one');
+  // A run that was killed may have made it too, and the look is what can say.
+  const killed = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: afterCreate(rejected('', '', { killed: true, signal: 'SIGTERM' })).run });
+  assert.deepEqual(killed, { existing: OPEN });
+  // And a create that exited cleanly and printed nothing to follow.
+  const silent = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: afterCreate({ stdout: 'done\n' }).run });
+  assert.deepEqual(silent, { existing: OPEN });
+  // The one it finds may be from another branch, and then this one is stranded.
+  const other = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: afterCreate(alreadyExists(), `${OPEN} feat/n8n-2.41.3\n`).run });
+  assert.deepEqual(other, { existing: OPEN, stranded: PUSHED });
+});
+
+test('a create that failed and finds nothing open keeps its own error, and a look that fails does not replace it', async () => {
+  const box = afterCreate(rejected('', 'GraphQL: Resource not accessible by personal access token\n'), '');
+  const nothing = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: box.run });
+  assert.match(nothing.error, /^The branch is pushed but the pull request was not opened: GraphQL: Resource not accessible/);
+  assert.equal(box.calls.length, 3, 'it looked again, and found none');
+  let looks = 0;
+  const failing = await openBumpPr({}, 'n8n', APPLIED, PUSHED, {
+    run: asking((s) => {
+      if (isCreate(s)) return rejected('', 'GraphQL: Resource not accessible by personal access token\n');
+      looks += 1;
+      return looks === 1 ? { stdout: '' } : rejected('', 'gh: API rate limit exceeded\n');
+    }),
+  });
+  assert.match(failing.error, /^The branch is pushed but the pull request was not opened: GraphQL: Resource not accessible/);
+  assert.doesNotMatch(failing.error, /rate limit/);
+  assert.equal(failing.existing, undefined);
+});
+
+test('a create that worked is not followed by a look', async () => {
+  const calls = [];
+  const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, { run: asking((s) => ({ stdout: isCreate(s) ? `${NEW_PR}\n` : '' }), calls) });
+  assert.deepEqual(out, { url: NEW_PR });
+  assert.equal(calls.length, 2);
+});
+
+test('a url is taken from the line gh printed it on, with whatever else came with it', async () => {
+  const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, {
+    run: asking((s) => ({ stdout: isCreate(s) ? `Creating draft pull request for ${PUSHED} into main\n\n${NEW_PR}\n` : '' })),
+  });
+  assert.equal(out.url, NEW_PR);
+});
+
+test('openBumpPr: what cannot be spliced into a command runs nothing, not even the question', async () => {
+  const bads = [
+    ['n8n; id', APPLIED, PUSHED],
+    ['n8n', { ...APPLIED, upstream: { from: '2.36.5', to: "2.42.0'; id" } }, PUSHED],
+    ['n8n', APPLIED, 'feat/n8n-2.41.3'],
+    ['n8n', undefined, PUSHED],
+  ];
+  for (const args of bads) {
+    const calls = [];
+    const out = await openBumpPr({}, ...args, { run: asking(() => ({ stdout: '' }), calls) });
+    assert.deepEqual(Object.keys(out), ['error']);
+    assert.equal(calls.length, 0, 'nothing was sent to the box');
+  }
 });

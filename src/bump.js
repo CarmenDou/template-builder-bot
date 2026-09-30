@@ -272,3 +272,215 @@ export async function runBump(config, code, deps = {}) {
   if (pushed !== branch) return { error: `The box says it pushed ${inspect(pushed).slice(0, 100)}, and this run would have named the branch ${branch}, so the branch is not handed on.` };
   return { applied: read.applied, branch };
 }
+
+// The CLI that opens pull requests, at the path review.js reads them through. It has a token on the
+// box and nowhere else does.
+const GH = '/data/home/bin/gh';
+const REPO = 'InsForge/instacloud-oss';
+
+// The same pattern as CODE in upstream.js, drift.js and registry.js, so a code those accept is accepted here.
+const CODE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+// The repository as a pattern. It is put into a regular expression below, and a `.` in a name would
+// match any character there.
+const REPO_PATTERN = REPO.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const PULL = `https://github\\.com/${REPO_PATTERN}/pull/\\d+`;
+
+// A pull request of this repository on a line of its own, and nothing else. A link is handed to a
+// person, so what gh printed beside it, or the url of some other repository, must not pass for one.
+const PULL_URL = new RegExp(`^${PULL}$`, 'm');
+
+// One line of `findOpenBumpScript`: the link, and the branch the pull request is from. The branch is
+// always there in what that script prints and is optional here only so that a bare link still reads.
+const OPEN_BUMP = new RegExp(`^(${PULL})(?: (\\S+))?$`, 'm');
+
+/**
+ * Shell that lists, one per line as `<link> <branch>`, the open pull requests whose branch is one
+ * this tool would have pushed for this template.
+ *
+ * The branch is printed because a caller that has just pushed one needs to know whether the pull
+ * request it was pointed at is on that branch or on an older one.
+ *
+ * Found by branch and never by title. A reviewer retypes a title, and a bump that stopped being
+ * found would be opened a second time. The prefix is the one `bumpBranch` names, so a pull request
+ * somebody else opened is not ours. A code that is the start of another (`a` and `a-b`) also
+ * matches the other's branches, which errs toward pointing at a pull request that is not this
+ * template's and never toward opening a second one.
+ *
+ * gh is the last command and not the head of a pipe, so its exit status is the script's. Piped
+ * through `head`, a gh that failed would print nothing and exit 0, which reads as "none open". And
+ * `--limit`, because gh lists thirty by default and an open bump beyond that would not be found.
+ *
+ * Throws on anything that is not a template code, before any text is built.
+ */
+export function findOpenBumpScript(code) {
+  if (typeof code !== 'string' || !CODE.test(code)) throw new Error(`${inspect(code)} is not a template code`);
+  return `${GH} pr list --repo ${REPO} --state open --limit 100 --json url,headRefName --jq '.[] | select(.headRefName | startswith("feat/${code}-")) | "\\(.url) \\(.headRefName)"'`;
+}
+
+/**
+ * Whether a bump pull request for this template is already open: `{ existing, head }` with its link
+ * and the branch it is from, `{}` when there is none, and `{ error }` when gh could not say, which
+ * is not the same as none. `head` is left out when the answer carried no branch.
+ *
+ * A caller that is about to push asks this first. `runBump` ends in a `--force-with-lease` push
+ * whose lease is taken against a clone made seconds before, so against the branch of an open pull
+ * request it is a force push, and it would rewrite that pull request's head.
+ */
+export async function findOpenBump(config, code, deps = {}) {
+  const { run = execInBox } = deps;
+  let script;
+  try {
+    script = findOpenBumpScript(code);
+  } catch (e) {
+    return { error: `${e.message}. A code is a directory under templates/ in instacloud-oss.` };
+  }
+  let answer;
+  try {
+    answer = await run(config, script, { timeoutMs: TIMEOUT_MS });
+  } catch (e) {
+    return { error: `Could not ask whether a bump is already open: ${describeStop(e)}.` };
+  }
+  const said = String(answer.stdout ?? '').trim();
+  if (!said) return {};
+  // The first one. Two open at once is rare, and either is a link to follow.
+  const open = OPEN_BUMP.exec(said);
+  if (!open) return { error: `gh answered with something that is not a pull request url, so it is not known whether a bump is open: ${said.slice(0, 200)}` };
+  return open[2] ? { existing: open[1], head: open[2] } : { existing: open[1] };
+}
+
+/**
+ * What a reviewer needs, and an honest account of what was not done.
+ *
+ * No trailer, because this repository's owner does not take them, and no "generated with" line,
+ * because it would be false here: `template-builder` opens these on the agent box and the diff is
+ * made by the registry's own patcher, which the body names. No password, because the box's rule is
+ * that credentials never reach a pull request body.
+ *
+ * It names no file. The patcher's row says what moved and not which files it wrote (n8n has no
+ * Dockerfile, for one), and the diff is right there in the pull request for anyone who wants the
+ * list. For the same reason it says nothing about how the result deploys.
+ *
+ * The command is the one a person would type and names the template, because without it the line
+ * tells a reviewer to patch every template in the registry. The `--json` the bump adds is for the
+ * machine that reads the answer. It says no person or agent wrote the diff and stops short of
+ * "deterministic": the patcher resolves the upstream over live APIs, so the same command later can
+ * write a different patch.
+ */
+export function prBody(applied) {
+  return [
+    '## What',
+    '',
+    `${applied.code}'s upstream moved from ${applied.upstream.from} to ${applied.upstream.to}`
+      + `${applied.level ? ` (${applied.level})` : ''}, so this moves the template's upstream pin to it`
+      + ` and bumps the template's own version (${applied.version.from} -> ${applied.version.to}).`,
+    '',
+    '## How',
+    '',
+    `Every edit here was made by \`npm run check-upstreams -- --apply ${applied.code}\` in \`templates/\`, and no`
+      + ' person or agent wrote any of it. The patcher is unit tested in this repository and refuses'
+      + ' rather than half-editing when a file is not what it expected. It resolves the upstream over'
+      + ' live APIs, so running it again later may pick a newer version.',
+    '',
+    '## Verify',
+    '',
+    '**This has not been deployed and nothing has verified that it still works.** The repository\'s own'
+      + ' checks, `npm run lint` and `npm run version-guard`, run in CI on this pull request and are'
+      + ' pending when it is opened.',
+  ].join('\n');
+}
+
+/**
+ * Shell that writes the body to a file and asks gh to open a DRAFT pull request from `branch` into
+ * main.
+ *
+ * Throws unless the code, all four versions and the branch are what this tool would have named. They
+ * are spliced into a shell command and a title, and this is exported and can be reached without
+ * going through `readApply` or `runBump`, so they are checked here, at the use, as the branch and
+ * the commit subject are in `bumpScript`. The template's own two versions go only into the body, but
+ * the body is public.
+ *
+ * The body file is left in /tmp on purpose. It is one per code so two bumps cannot collide, about a
+ * kilobyte, on a tmpfs that a restart clears.
+ */
+export function openPrScript(code, applied, branch) {
+  if (typeof code !== 'string' || !CODE.test(code)) throw new Error(`${inspect(code)} is not a template code`);
+  if (applied?.code !== code) throw new Error(`the patch is for ${inspect(applied?.code).slice(0, 60)}, not for ${code}`);
+  const versions = {
+    'upstream from': applied.upstream?.from,
+    'upstream to': applied.upstream?.to,
+    'template from': applied.version?.from,
+    'template to': applied.version?.to,
+  };
+  for (const [what, v] of Object.entries(versions)) {
+    if (typeof v !== 'string' || !VERSION.test(v)) throw new Error(`the ${what} version ${inspect(v).slice(0, 60)} is not a plain version string, so it is not put in a pull request`);
+  }
+  if (branch !== bumpBranch(code, applied)) {
+    throw new Error(`${inspect(branch).slice(0, 100)} is not the branch a bump of ${code} to ${applied.upstream.to} is pushed to`);
+  }
+  const title = `${code} ${applied.upstream.from} -> ${applied.upstream.to}`;
+  // Base64 for the same reason the task prompts are: a body with quotes in it does not survive
+  // being spliced into a shell command, and this one has backticks.
+  const body64 = Buffer.from(prBody(applied), 'utf8').toString('base64');
+  return [
+    // The redirect truncates the file before anything is written to it, so a write that fails part
+    // way has to stop here, or gh opens a real pull request on a public repository with half a body.
+    `printf '%s' '${body64}' | base64 -d > /tmp/bump-${code}.md || exit 1`,
+    `${GH} pr create --repo ${REPO} --draft --base main --head ${branch} --title '${title}' --body-file /tmp/bump-${code}.md`,
+  ].join('\n');
+}
+
+// What an open bump pull request means for the branch a caller has just pushed. `stranded` is that
+// branch, and it is there unless the open pull request is known to be from it: the branch is on the
+// remote with no pull request of its own, and a caller that says nothing was pushed would be wrong.
+const alreadyOpen = (found, branch) => (found.head === branch ? { existing: found.existing } : { existing: found.existing, stranded: branch });
+
+/**
+ * Open the draft pull request for a branch that has been pushed, unless a bump for this template is
+ * already open, and say what came of it: `{ url }`, `{ existing }` with the link of the one that is
+ * open and nothing opened, or `{ error }`. `{ existing }` carries `stranded` when the branch handed
+ * in has no pull request of its own, as `alreadyOpen` says.
+ *
+ * It asks whether one is open although its caller may have asked before pushing. That costs one
+ * `gh pr list` and closes the gap between that question and this pull request. When it could not
+ * ask, it opens nothing.
+ *
+ * A create that failed is followed by one more look before it is called a failure. Over ssh
+ * `execInBox` runs the whole script again after a rejection, so a create that succeeded and then
+ * lost the connection runs twice, and the second is refused because a pull request for that branch
+ * exists. Saying it was not opened would then be false, and would send a person to open it.
+ *
+ * What is refused by `openPrScript` is refused before anything is sent, the question included.
+ */
+export async function openBumpPr(config, code, applied, branch, deps = {}) {
+  const { run = execInBox } = deps;
+  let script;
+  try {
+    script = openPrScript(code, applied, branch);
+  } catch (e) {
+    return { error: e.message };
+  }
+  const open = await findOpenBump(config, code, deps);
+  if (open.error) return open;
+  if (open.existing) return alreadyOpen(open, branch);
+
+  // What to answer when the create did not give a link. The create's own error stays the answer
+  // unless the look finds one open, and a look that fails is not allowed to replace it.
+  const unopened = async (error) => {
+    const again = await findOpenBump(config, code, deps);
+    return again.existing ? alreadyOpen(again, branch) : { error };
+  };
+
+  let answer;
+  try {
+    answer = await run(config, script, { timeoutMs: TIMEOUT_MS });
+  } catch (e) {
+    // A run that was killed may have got as far as creating it, so it cannot say there is none.
+    const maybe = wasKilled(e) ? ' The pull request may have been opened before that, so look at the repository before trying again.' : '';
+    return unopened(`The branch is pushed but the pull request was not opened: ${describeStop(e)}.${maybe}`);
+  }
+  const said = String(answer.stdout ?? '').trim();
+  // The line it is on, because gh may say other things on the way.
+  const url = PULL_URL.exec(said);
+  return url ? { url: url[0] } : unopened(`The branch is pushed but gh did not print a pull request url: ${said.slice(0, 200) || '(nothing)'}`);
+}
