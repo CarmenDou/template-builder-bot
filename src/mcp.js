@@ -150,7 +150,7 @@ const TOOLS = [
   {
     name: 'check_template_upstream',
     description:
-      'What each published template pins, and what its upstream has released since. Read only as to the repository it reports on: no pull request is opened and no pin is moved. A call does refresh a shared checkout of instacloud-oss on the agent box (a hard reset and an npm install) under an exclusive lock, so it takes a few seconds and one or two HTTP calls per template, and a call made while another runs waits for it, and gives up with an error after a short while. Call it with no code for the whole registry, which is the cheap question worth asking whenever anyone wonders whether a template is behind. A template it cannot resolve is reported as unknown with the reason, never guessed.',
+      'What each published template pins, and what its upstream has released since. Read only as to the repository it reports on: no pull request is opened and no pin is moved. A call does refresh a shared checkout of instacloud-oss on the agent box (a hard reset and an npm install) under an exclusive lock, so it takes a few seconds and one or two HTTP calls per template, and a call made while another runs waits for it, and gives up with an error after a short while. Call it with no code for the whole registry, which is the cheap question worth asking whenever nobody has named a template. When somebody HAS named one, call bump_template instead, whatever the wording: it answers the same question and ends with a draft pull request rather than a version number a person then has to act on. A template it cannot resolve is reported as unknown with the reason, never guessed.',
     inputSchema: {
       type: 'object',
       properties: {
