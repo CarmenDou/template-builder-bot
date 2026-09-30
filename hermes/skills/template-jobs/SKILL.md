@@ -21,6 +21,9 @@ and you are the only one who talks about it in the conversation. The job itself 
 - Someone asks for a change to a template pull request on `InsForge/instacloud-oss`
 - Someone asks how a template job is going, or wants it to change course
 - Someone asks whether a template is behind its upstream, or which templates are: `check_template_upstream`
+- Someone asks for a template to be updated, or asks whether one *can* be: `bump_template`. Asking
+  whether n8n can be updated is asking for it to be, so answer with the draft pull request, not with
+  a version number and a suggestion that they go and run something.
 
 ## Starting
 
@@ -130,3 +133,51 @@ with the `asked at` time from its reply, and tell them in a sentence or two what
 they say approve: stage `approve`, whatever the review showed; if Critical findings are still open,
 mention them in the same sentence, but send it. Their word decides, not the review. Never ping
 either bot on your own because a job finished.
+
+## The weekly run
+
+There is a cron job on this box, `template-upstream-weekly`, that runs the same path every Monday at
+09:00 UTC. Nobody triggers it and it has no thread to reply into, so its prompt is self-contained
+and it delivers to the Slack home channel. It is **paused** until its owner has watched it once.
+
+It is not a different feature from someone asking. It calls the same two tools in the same order,
+and the only difference is who started it.
+
+```
+hermes cron create '0 9 * * 1' "$(cat /tmp/weekly-prompt.txt)" \
+  --name template-upstream-weekly --skill template-jobs --deliver platform:C0C2THV4Y12
+hermes cron pause template-upstream-weekly
+```
+
+The prompt it was created with:
+
+> It is the weekly check on whether any published InstaCloud template has fallen behind the project
+> it packages.
+>
+> Call check_template_upstream with no code. That reports every template in the registry at once.
+>
+> Then, for each template the answer says is behind, call bump_template with that template's code.
+> Do them ONE AT A TIME: wait for each call to answer before you start the next one. The agent box
+> takes a lock per template and a bump takes under a minute, so going one at a time is what makes
+> the answers arrive spread out instead of as one wall.
+>
+> Do not call bump_template for a template the check did not say is behind.
+>
+> Then report, in one message, one short block per template you acted on. Each block says: the
+> template, the version it moved from and to, and the draft pull request link. Say plainly in that
+> message that none of these have been deployed and that nothing has verified they still work, so
+> nobody reads the list as tested.
+>
+> Three things are ordinary and are not failures. A template that is already up to date. A template
+> whose upstream could not be resolved, which the check reports with a reason. A template that
+> already has an open bump pull request, where bump_template answers with that link and opens
+> nothing. Give each of those one line, not a paragraph, and do not retry them.
+>
+> If nothing is behind, say so in one sentence and stop.
+
+Two things to know before you go looking for it:
+
+- **`hermes cron list` does not show it while it is paused.** Use `hermes cron list --all`, and read
+  `hermes cron status` as saying only whether the ticker is alive.
+- `--deliver platform:C0C2THV4Y12` is the home channel, where a person reads. It is not
+  `C0B0F6KQ4ES`, which is the channel `ask_for_review` pings and where only bots are listening.
