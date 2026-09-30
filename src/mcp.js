@@ -1,6 +1,9 @@
+import { inspect } from 'node:util';
 import { startJob, readJob, jobFeed, steerJob, stopJob, listRunningJobs, parseResult } from './agent.js';
 import { askForReview, reviewStatus } from './review.js';
 import { openUpstreamPr } from './upstream.js';
+import { checkUpstream, describeDrift } from './drift.js';
+import { findOpenBump, runBump, openBumpPr, describeBump } from './bump.js';
 
 // The job-control layer, offered to a conversational agent as MCP tools.
 //
@@ -8,7 +11,7 @@ import { openUpstreamPr } from './upstream.js';
 // an insta credential that can exec into a machine holding a GitHub token, and
 // an agent with a terminal tool would be able to use that credential directly,
 // straight past every guard below. Keeping the credential on this side means
-// the only reachable surface is these six calls, and they refuse.
+// the only reachable surface is whatever TOOLS lists below.
 const PROTOCOL_VERSION = '2025-06-18';
 
 // Descriptions are written for the caller to read. A tool that explains what it
@@ -145,6 +148,32 @@ const TOOLS = [
     },
   },
   {
+    name: 'check_template_upstream',
+    description:
+      'What each published template pins, and what its upstream has released since. Read only as to the repository it reports on: no pull request is opened and no pin is moved. A call does refresh a shared checkout of instacloud-oss on the agent box (a hard reset and an npm install) under an exclusive lock, so it takes a few seconds and one or two HTTP calls per template, and a call made while another runs waits for it, and gives up with an error after a short while. Call it with no code for the whole registry, which is the cheap question worth asking whenever anyone wonders whether a template is behind. A template it cannot resolve is reported as unknown with the reason, never guessed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        code: {
+          type: 'string',
+          description: 'One template code, like n8n or claude-code. Leave it out for all of them.',
+        },
+      },
+    },
+  },
+  {
+    name: 'bump_template',
+    description:
+      "Move one published template forward to the version its upstream has released, and open a DRAFT pull request with the result. Every edit is made by the registry's own patcher and none is written by hand, and it refuses rather than leave a file half edited when one is not what it expected. Usually takes under a minute: a call made while another bump of the same template runs waits for it, and gives up with an error after a short while. It does NOT deploy the result and nothing verifies that the template still works, so never say it was tested. Pushing the branch also runs that repository's image build, which publishes container images to GHCR under tags for the branch and commit, and because a new branch has no base to compare against, that first run rebuilds every template that ships its own image. It first asks whether a bump pull request for this template is already open, and if one is it answers with that link and pushes and opens nothing. A template that is already up to date opens nothing and says so.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'One template code, like n8n or claude-code.' },
+      },
+      required: ['code'],
+    },
+  },
+  {
     name: 'stop_job',
     description:
       'End a job. Anything it already pushed stays pushed and nothing is reverted, so this abandons rather than undoes. Steering is almost always the better answer; stop only when the work should not continue at all.',
@@ -155,6 +184,9 @@ const TOOLS = [
     },
   },
 ];
+
+// A template code, spelled as in drift.js and bump.js. An option must never get through as one.
+const CODE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 const text = (s) => ({ content: [{ type: 'text', text: s }] });
 const failure = (s) => ({ content: [{ type: 'text', text: s }], isError: true });
@@ -170,6 +202,10 @@ async function callTool(config, name, args, deps) {
     review = askForReview,
     reviews = reviewStatus,
     openPr = openUpstreamPr,
+    drift = checkUpstream,
+    findOpen = findOpenBump,
+    bump = runBump,
+    openBump = openBumpPr,
   } = deps;
 
   // The job never posts anywhere itself. Whoever started it follows it and does
@@ -344,6 +380,31 @@ async function callTool(config, name, args, deps) {
       } catch (error) {
         return failure(`Could not offer ${code || '(no code)'} upstream: ${error.message.slice(0, 300)}`);
       }
+    }
+
+    case 'check_template_upstream': {
+      const { rows, error } = await drift(config, args?.code ? [String(args.code)] : []);
+      if (error) return failure(error);
+      return text(describeDrift(rows));
+    }
+
+    case 'bump_template': {
+      const code = String(args?.code ?? '');
+      if (!CODE.test(code)) return failure(`${inspect(code).slice(0, 60)} is not a template code. A code is a directory under templates/ in instacloud-oss.`);
+
+      // Asked first: the bump ends in a push that would rewrite an open pull request's branch.
+      const open = await findOpen(config, code);
+      if (open.error) return failure(open.error);
+      if (open.existing) return text(describeBump({ code, existing: open.existing }));
+
+      const bumped = await bump(config, code);
+      if (bumped.error) return failure(bumped.error);
+      if (bumped.refused) return failure(`${code} was not patched: ${bumped.refused}`);
+      if (bumped.current) return text(`${code} is up to date, so there is nothing to open.`);
+
+      const pr = await openBump(config, code, bumped.applied, bumped.branch);
+      if (pr.error) return failure(pr.error);
+      return text(describeBump({ applied: bumped.applied, ...pr }));
     }
 
     case 'stop_job':
