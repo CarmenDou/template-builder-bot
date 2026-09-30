@@ -495,7 +495,13 @@ async function exec(sb, script, env = {}) {
   }
   const log = join(sb.root, 'log');
   await rm(log, { force: true });
-  const r = spawnSync('sh', ['-c', moved], { encoding: 'utf8', timeout: 20000, env: boxEnv(sb, env) });
+  // Only to end a hang, so it is far above anything healthy rather than near it. One outcome waits
+  // out the real 15 second lock, and a loaded machine stretches every spawn here: at 20 seconds this
+  // fired on runs that were fine, and reported it as `status: null`, which names neither the test
+  // nor the cause. A hang does not finish at all, so a generous bound costs a healthy run nothing.
+  const r = spawnSync('sh', ['-c', moved], { encoding: 'utf8', timeout: 120000, env: boxEnv(sb, env) });
+  // spawnSync reports a timeout or a failure to spawn HERE, not in the status, which is then null.
+  if (r.error) throw new Error(`the sandbox script did not finish: ${r.error.message}`);
   const read = (file) => readFile(file, 'utf8').catch(() => '');
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls: (await read(log)).split('\n').filter(Boolean) };
 }
