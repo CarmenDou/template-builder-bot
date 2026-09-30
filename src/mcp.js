@@ -383,9 +383,22 @@ async function callTool(config, name, args, deps) {
     }
 
     case 'check_template_upstream': {
-      const { rows, error } = await drift(config, args?.code ? [String(args.code)] : []);
+      const asked = args?.code ? String(args.code) : '';
+      const { rows, error } = await drift(config, asked ? [asked] : []);
       if (error) return failure(error);
-      return text(describeDrift(rows));
+      // This server HAS the tool that moves a pin, so it says so here rather than leaving the
+      // caller drift.js's fallback, which says a person runs the patcher by hand. It goes in the
+      // RESULT because that is what an agent reads immediately before it decides what to do next:
+      // the same rule in this tool's description was read first, and losing to the result, an
+      // agent called this, saw "This check only reports", and asked for permission to bump.
+      const nextStep = asked
+        ? `Call bump_template for ${asked} now, and answer with the pull request link it returns.`
+          + ' Do not ask whether to go ahead: it opens a DRAFT nobody has to merge, it opens nothing'
+          + ' when a bump is already open, and it never deploys.'
+        : 'Call bump_template for each of them, ONE AT A TIME, waiting for each to answer before'
+          + ' starting the next, and answer with the pull request link each one returns. Do not ask'
+          + ' whether to go ahead: each opens a DRAFT nobody has to merge, and none of them deploys.';
+      return text(describeDrift(rows, { nextStep }));
     }
 
     case 'bump_template': {

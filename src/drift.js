@@ -137,7 +137,7 @@ export async function checkUpstream(config, codes, deps = {}) {
 }
 
 /** One line per template, and the move that follows from them. */
-export function describeDrift(rows) {
+export function describeDrift(rows, { nextStep } = {}) {
   // Nothing was looked at, so there is nothing to call clean. readDrift refuses an empty list, and
   // this keeps the same answer for a caller that arrives here some other way.
   if (!rows.length) return 'No templates were found, so nothing was checked.';
@@ -151,6 +151,11 @@ export function describeDrift(rows) {
   let next = '\n\nNothing is behind.';
   if (behind.length) {
     // The reader sees its own tools and this file cannot, so nothing here names one or denies one.
+    // A caller that DOES have one passes `nextStep` and says so in its own words. Observed live:
+    // with only the fallback below, an agent holding a bump tool read "This check only reports",
+    // reported, and asked the person for permission it did not need. What a tool RETURNS is read
+    // just before acting, and it beats anything in the tool's description.
+    if (nextStep) return `${lines.join('\n')}\n\n${behind.length} behind. ${nextStep}`;
     // The example code is checked against CODE for the reason the comment on CODE gives: this is a
     // command a person is told to run, and `readDrift` reads rows out of noisy box output rather
     // than validating them. A row that does not carry a plain code gets the placeholder.
