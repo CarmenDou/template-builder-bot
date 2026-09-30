@@ -484,3 +484,37 @@ export async function openBumpPr(config, code, applied, branch, deps = {}) {
   const url = PULL_URL.exec(said);
   return url ? { url: url[0] } : unopened(`The branch is pushed but gh did not print a pull request url: ${said.slice(0, 200) || '(nothing)'}`);
 }
+
+// The one sentence that says what was not done to a patch, shared by every answer that has one.
+const UNTESTED = 'It has NOT been deployed and no verification has run, so do not say it was tested.';
+
+/**
+ * What to tell the person, and never that the result was tested. The shapes: a pull request was
+ * opened, one was already open before anything ran, and one appeared once the branch was pushed.
+ *
+ * `applied` is absent when nothing ran, so there is no move to name and nothing was pushed.
+ * `stranded` is `openBumpPr`'s: a branch was pushed that the open pull request is not known to be from.
+ */
+export function describeBump({ applied, code, url, existing, stranded }) {
+  // Named, not "this template": the weekly run puts one of these beside seven others in a single
+  // message, and there "this template" points at nothing.
+  const named = applied?.code ?? code;
+  if (!applied) {
+    return `A bump pull request for ${named ?? 'this template'} is already open: ${existing}\n\n`
+      + 'Nothing was pushed and nothing was opened. This did not check whether it has been deployed or verified.';
+  }
+  const move = `${applied.code} ${applied.upstream.from} -> ${applied.upstream.to}`
+    + `${applied.level ? ` (${applied.level})` : ''}, template ${applied.version.from} -> ${applied.version.to}`;
+  if (url) {
+    return `${move}\n\nDraft pull request: ${url}\n\nThe diff was made by the registry's own patcher. ${UNTESTED}`
+      + " CI runs the repository's lint and version guard on it.";
+  }
+  if (stranded) {
+    return `${move}\n\nA bump pull request for ${applied.code} is already open: ${existing}\n\n`
+      + `This bump pushed a branch anyway, ${stranded}, and that pull request is not known to be from it,`
+      + ` so the branch is in the repository with no pull request of its own. Nothing was opened. ${UNTESTED}`;
+  }
+  return `${move}\n\nA bump pull request for ${applied.code} appeared while this bump was running: ${existing}\n\n`
+    + `This bump pushed ${bumpBranch(applied.code, applied)}, which is that pull request's branch, so the patch`
+    + ` is in it and no second pull request was opened. ${UNTESTED}`;
+}

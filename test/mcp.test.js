@@ -21,6 +21,7 @@ test('every tool says what it is for, and none of them can delete', () => {
   const names = TOOLS.map((t) => t.name).sort();
   assert.deepEqual(names, [
     'ask_for_review',
+    'bump_template',
     'check_template_upstream',
     'continue_template_pr',
     'follow_job',
@@ -403,7 +404,7 @@ test('sending says it is outward, needs a person, and what it will refuse', () =
 
 // A stub that throws proves nothing when the caller catches what it throws, so these count their
 // calls instead and the count is read after the answer has come back.
-const OTHER_DEPS = ['start', 'read', 'feed', 'steer', 'stop', 'running', 'review', 'reviews', 'openPr'];
+const OTHER_DEPS = ['start', 'read', 'feed', 'steer', 'stop', 'running', 'review', 'reviews', 'openPr', 'findOpen', 'bump', 'openBump'];
 const spied = (names) => {
   const calls = [];
   return { calls, deps: Object.fromEntries(names.map((n) => [n, async () => (calls.push(n), {})])) };
@@ -655,4 +656,195 @@ test('the tool describes itself without naming a tool that is not on the surface
   assert.equal(words.length, 2, 'the description and the one property');
   // claude-code is the example template code the property gives, which is not a tool.
   for (const w of words) assert.deepEqual(notOffered(w, 'claude-code'), [], w);
+});
+
+// bump_template. Its own copy of the patcher's answer: the one in test/bump.test.js is not in scope.
+const APPLIED = {
+  code: 'n8n',
+  kind: 'docker-tag',
+  level: 'minor',
+  upstream: { from: '2.36.5', to: '2.41.3' },
+  version: { from: '1.3.2', to: '1.4.0' },
+};
+const BRANCH = 'feat/n8n-2.41.3';
+const NEW_PR = 'https://github.com/InsForge/instacloud-oss/pull/192';
+const OLD_PR = 'https://github.com/InsForge/instacloud-oss/pull/191';
+
+// All three calls into the box are stubbed, and each is counted: a stub that throws proves nothing
+// when the caller catches what it throws. A test that leaves one out gets an answer, not the box.
+const bumpTool = async (args, answers = {}) => {
+  const { open = {}, bumped = { applied: APPLIED, branch: BRANCH }, pr = { url: NEW_PR } } = answers;
+  const calls = [];
+  const handed = {};
+  const out = await rpc('tools/call', { name: 'bump_template', arguments: args }, {
+    findOpen: async (...a) => (calls.push(`open?:${a[1]}`), (handed.open = a), open),
+    bump: async (...a) => (calls.push(`bump:${a[1]}`), (handed.bump = a), bumped),
+    openBump: async (...a) => (calls.push(`pr:${a[1]}`), (handed.pr = a), pr),
+  });
+  return { out, calls, handed, said: out.result.content[0].text };
+};
+
+// The only sentences allowed to mention deploying or verifying: the ones that deny it.
+const DENIALS = [
+  /It has NOT been deployed and no verification has run, so do not say it was tested\./,
+  /This did not check whether it has been deployed or verified\./,
+];
+
+// Any way of saying a push did not happen, which is false wherever a branch was pushed.
+const SAYS_NOT_PUSHED = /\b(nothing|no|not|never)\b[^.\n]{0,40}\bpush/i;
+
+test('bump_template asks whether a bump is open before it pushes anything, then opens a draft pull request', async () => {
+  const { out, calls, handed, said } = await bumpTool({ code: 'n8n' });
+  // The whole array: a subset or a set check would pass the very order this exists to forbid.
+  assert.deepEqual(calls, ['open?:n8n', 'bump:n8n', 'pr:n8n']);
+  assert.deepEqual(handed.open, [config, 'n8n']);
+  assert.deepEqual(handed.bump, [config, 'n8n']);
+  assert.deepEqual(handed.pr, [config, 'n8n', APPLIED, BRANCH], 'the pull request is for what was patched, on the branch that was pushed');
+  assert.match(said, /^n8n 2\.36\.5 -> 2\.41\.3 \(minor\), template 1\.3\.2 -> 1\.4\.0$/m);
+  assert.match(said, /^Draft pull request: https:\/\/github\.com\/InsForge\/instacloud-oss\/pull\/192$/m);
+  assert.match(said, DENIALS[0], 'Hermes must not claim this was tested');
+  assert.equal(out.result.content.length, 1);
+  assert.equal(out.result.isError, undefined);
+});
+
+test('a code with a hyphen in it is a code', async () => {
+  const { calls } = await bumpTool({ code: 'claude-code' });
+  assert.deepEqual(calls, ['open?:claude-code', 'bump:claude-code', 'pr:claude-code']);
+});
+
+test('a bump that is already open is answered with its link, and nothing is bumped or opened', async () => {
+  // The branch comes with the link when the list gave one, and a bare link is an answer too.
+  for (const open of [{ existing: OLD_PR, head: 'feat/n8n-2.40.0' }, { existing: OLD_PR }]) {
+    const { out, calls, said } = await bumpTool({ code: 'n8n' }, { open });
+    // Not just no second pull request: the bump ends in a push that would rewrite this one's branch.
+    assert.deepEqual(calls, ['open?:n8n'], JSON.stringify(open));
+    // Named, not "this template": the weekly run lists eight of these in one message.
+    assert.match(said, /^A bump pull request for n8n is already open: https:\/\/github\.com\/InsForge\/instacloud-oss\/pull\/191$/m);
+    assert.doesNotMatch(said, /this template/);
+    assert.match(said, /Nothing was pushed and nothing was opened\./);
+    assert.match(said, DENIALS[1], 'nothing here looked at whether that pull request was ever tested');
+    // Somebody may have continued that pull request and deployed it since, so it is not called untested.
+    assert.doesNotMatch(said, DENIALS[0]);
+    assert.doesNotMatch(said, /->/, 'no move is named, because none was worked out');
+    assert.doesNotMatch(said, /Draft pull request/);
+    assert.equal(out.result.isError, undefined);
+  }
+});
+
+test('a pull request that appeared while the bump ran is said to hold the branch this bump pushed', async () => {
+  const { out, calls, said } = await bumpTool({ code: 'n8n' }, { pr: { existing: OLD_PR } });
+  assert.deepEqual(calls, ['open?:n8n', 'bump:n8n', 'pr:n8n']);
+  assert.match(said, /^n8n 2\.36\.5 -> 2\.41\.3 \(minor\), template 1\.3\.2 -> 1\.4\.0$/m);
+  // A whole line, so nothing can stand between the words and the link, "Draft pull request:" included.
+  assert.ok(said.split('\n').includes(`A bump pull request for n8n appeared while this bump was running: ${OLD_PR}`));
+  assert.match(said, /pushed feat\/n8n-2\.41\.3, which is that pull request's branch/);
+  assert.match(said, /no second pull request was opened/);
+  assert.match(said, DENIALS[0]);
+  // A branch WAS pushed, and it is the one that pull request is from.
+  assert.doesNotMatch(said, SAYS_NOT_PUSHED);
+  assert.doesNotMatch(said, /no pull request of its own/, 'the branch is covered, so it is not stranded');
+  assert.equal(out.result.isError, undefined);
+});
+
+test('a branch pushed while a different pull request was open is said to be pushed, and is named', async () => {
+  // Not the name describeBump would derive from the patch, so the answer can only have it from `stranded`.
+  const { out, said } = await bumpTool({ code: 'n8n' }, { pr: { existing: OLD_PR, stranded: 'feat/n8n-9.9.9' } });
+  assert.ok(said.split('\n').includes(`A bump pull request for n8n is already open: ${OLD_PR}`));
+  assert.match(said, /pushed a branch anyway, feat\/n8n-9\.9\.9,/);
+  assert.match(said, /not known to be from it/);
+  assert.match(said, /no pull request of its own/);
+  assert.match(said, /Nothing was opened\./);
+  assert.match(said, DENIALS[0]);
+  // The one thing the plain "already open" answer says, and false here.
+  assert.doesNotMatch(said, SAYS_NOT_PUSHED);
+  assert.doesNotMatch(said, /appeared while/, 'this is not the case where the pull request holds the branch');
+  assert.equal(out.result.isError, undefined);
+});
+
+test('a template that is current opens nothing and says so', async () => {
+  const { out, calls, said } = await bumpTool({ code: 'pi' }, { bumped: { current: true, code: 'pi' } });
+  assert.deepEqual(calls, ['open?:pi', 'bump:pi'], 'nothing to open for a template that has not moved');
+  assert.equal(said, 'pi is up to date, so there is nothing to open.');
+  assert.equal(out.result.isError, undefined);
+});
+
+test('a refusal from the patcher reaches the person, with its reason, and nothing is opened', async () => {
+  const bumped = { refused: 'the Dockerfile does not name c9dcaab in any instruction', code: 'laya' };
+  const { out, calls, said } = await bumpTool({ code: 'laya' }, { bumped });
+  assert.deepEqual(calls, ['open?:laya', 'bump:laya']);
+  assert.equal(said, 'laya was not patched: the Dockerfile does not name c9dcaab in any instruction');
+  assert.equal(out.result.isError, true);
+});
+
+test('an error at any of the three calls is the answer as written, and stops there', async () => {
+  const error = 'The branch is pushed but the pull request was not opened: no route to github.';
+  for (const [stage, answers, expected] of [
+    // Not being able to ask is not a licence to bump: the push is what cannot be taken back.
+    ['asking', { open: { error } }, ['open?:n8n']],
+    ['bumping', { bumped: { error } }, ['open?:n8n', 'bump:n8n']],
+    ['opening', { pr: { error } }, ['open?:n8n', 'bump:n8n', 'pr:n8n']],
+  ]) {
+    const { out, calls } = await bumpTool({ code: 'n8n' }, answers);
+    assert.deepEqual(calls, expected, stage);
+    assert.deepEqual(out.result, { content: [{ type: 'text', text: error }], isError: true }, stage);
+  }
+});
+
+test('bump_template refuses a code that is not one, and reaches nothing', async () => {
+  // The bump WRITES and PUSHES on a box that holds push rights. The pattern is checked here, before any
+  // call, because with the calls stubbed nothing else would stop an option arriving as a code.
+  for (const code of ['--apply', '--apply --json', 'n8n --apply', 'n8n; reboot', '$(reboot)', '-h', 'N8N', 'n8n\n', '', 'a--b']) {
+    const { out, calls, said } = await bumpTool({ code });
+    assert.deepEqual(calls, [], `${JSON.stringify(code)} must not reach anything`);
+    assert.equal(out.result.isError, true, `${JSON.stringify(code)} is refused`);
+    assert.match(said, /is not a template code/, JSON.stringify(code));
+  }
+  const missing = await bumpTool({});
+  assert.deepEqual(missing.calls, [], 'no code at all reaches nothing either');
+  assert.equal(missing.out.result.isError, true);
+  // What a caller wrote lands in a chat reply, so a refusal does not repeat all of it.
+  const long = await bumpTool({ code: 'N'.repeat(5000) });
+  assert.equal(long.out.result.isError, true);
+  assert.ok(long.said.length < 200, `${long.said.length} characters`);
+});
+
+test('whatever bump_template says, it says nothing untrue about testing and names no tool', async () => {
+  const shapes = {
+    opened: [{}, 0],
+    'opened, no level': [{ bumped: { applied: { ...APPLIED, level: null }, branch: BRANCH } }, 0],
+    'found open first': [{ open: { existing: OLD_PR, head: 'feat/n8n-2.40.0' } }, 1],
+    'found open late': [{ pr: { existing: OLD_PR } }, 0],
+    'found open late, branch stranded': [{ pr: { existing: OLD_PR, stranded: BRANCH } }, 0],
+  };
+  for (const [what, [answers, denial]] of Object.entries(shapes)) {
+    const { out, said } = await bumpTool({ code: 'n8n' }, answers);
+    assert.equal(out.result.isError, undefined, what);
+    assert.doesNotMatch(said, /undefined|null|NaN|\[object/, `${what}: a blank was left in the answer`);
+    assert.match(said, DENIALS[denial], `${what}: says what was not done`);
+    assert.doesNotMatch(said, DENIALS[1 - denial], `${what}: says the other shape's denial`);
+    // Take the denials out and nothing left may claim anything about how well it is known to work.
+    const rest = DENIALS.reduce((s, d) => s.replace(d, ''), said);
+    assert.doesNotMatch(rest, /\b(deploy|test|verif|valid|check|pass|green|work|safe|ready|confirm|approv|good|succe|complet|done|finish)/i, `${what}: says something about testing that is not a denial`);
+    assert.deepEqual(namedTools(said), [], `${what}: names a tool, and whether the reader has it is not this server's to say`);
+  }
+});
+
+test('bump_template is described so that nobody needs a skill to use it', () => {
+  const tool = TOOLS.find((t) => t.name === 'bump_template');
+  const d = tool.description;
+  assert.match(d, /open a DRAFT pull request with the result/);
+  assert.match(d, /Every edit is made by the registry's own patcher and none is written by hand/);
+  assert.match(d, /refuses rather than leave a file half edited/);
+  // The patcher reads live registries, so the same command later can write a different patch.
+  assert.doesNotMatch(d, /deterministic/);
+  assert.match(d, /It does NOT deploy the result and nothing verifies that the template still works, so never say it was tested/);
+  // It asks before it pushes, and what it answers when the answer is yes.
+  assert.match(d, /first asks whether a bump pull request for this template is already open/);
+  assert.match(d, /answers with that link and pushes and opens nothing/);
+  assert.match(d, /already up to date opens nothing and says so/);
+  assert.match(d, /another bump of the same template runs waits for it, and gives up with an error after a short while/);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties), ['code']);
+  assert.deepEqual(tool.inputSchema.required, ['code']);
+  // claude-code is the example code the property gives, which is not a tool.
+  for (const w of [d, tool.inputSchema.properties.code.description]) assert.deepEqual(notOffered(w, 'claude-code'), [], w);
 });
