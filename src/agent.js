@@ -140,6 +140,20 @@ function runnerScript(dir, claudeLine) {
     `if ! dpkg -s libnss3 >/dev/null 2>&1 || ! ls /data/home/.cache/ms-playwright 2>/dev/null | grep -q chromium; then`,
     `  npx -y ${PLAYWRIGHT} install --with-deps chromium > ${dir}/setup.log 2>&1`,
     'fi',
+    // The insta skill is written out by `insta agent setup`, so it is a snapshot of whichever CLI
+    // wrote it. The CLI updates itself and the skill does not follow, so the box drifts into
+    // reasoning from rules the platform no longer has. Measured: the box sat on a skill 37 lines
+    // behind its own CLI, missing the table that says in one line which apps are not a fit, which
+    // is exactly what one job spent a long analysis deriving for itself.
+    //
+    // Keyed on the version string rather than a timestamp, so it runs once per CLI update and not
+    // once per job. `agent setup` was checked on this box: it rewrites the skill and leaves the
+    // CLI binary and the saved environment untouched.
+    'INSTA_V=$(insta --version 2>/dev/null)',
+    'if [ -n "$INSTA_V" ] && [ "$INSTA_V" != "$(cat /data/home/.claude/skills/.insta-version 2>/dev/null)" ]; then',
+    `  insta agent setup -y >> ${dir}/setup.log 2>&1 \\`,
+    '    && printf %s "$INSTA_V" > /data/home/.claude/skills/.insta-version',
+    'fi',
     // No `set -e`: a failing claude must still reach the next line, because
     // exit.code is what the poller waits for.
     //
