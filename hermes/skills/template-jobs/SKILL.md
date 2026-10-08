@@ -52,13 +52,24 @@ What comes back since your last look:
 - `said: ...` is the agent narrating
 - `run: ...` and the other lines are the tools it called
 
-After each look, tell the person in ONE plain sentence what it did since the last one and why, in
-the language they have been using. Name the real thing: "it is reading how Twenty's image starts to
-see whether the worker needs its own image", not "it ran some commands". Never paste the feed,
-never quote a raw command, never list tool names.
+**A `stage:` is news. A `note:` is news. Narration is not.** `said:` lines are the agent thinking
+out loud and they arrive the whole time, so a look that brought only those is a look you say
+nothing about. Relaying them turns a twenty minute job into forty messages that each amount to "it
+is still going", and a person reading that still cannot tell how far along it is.
 
-If a look shows nothing new, say nothing. If nothing has changed for about five minutes, say in a
-sentence what it is waiting on, a CI run or a deploy, so silence never looks like a dead job.
+When you do speak, lead with the stage, then what changed:
+
+    [pr] opened the draft, CI is running now
+    [verify] the deck kept its edits across a restart
+
+The stages run triage, manifest, pr, build, deploy, verify, so naming one places the job on that
+line without anyone having to ask. Then the real thing in plain words: "it is reading how Twenty's
+image starts, to see whether the worker needs its own image", not "it ran some commands". Never
+paste the feed, never quote a raw command, never list tool names.
+
+If a stage has been running about five minutes, say in one sentence what it is waiting on, a CI run
+or a deploy, so silence never looks like a dead job. That sentence is the exception to the rule
+above: it is the one time nothing having happened is itself worth saying.
 
 When the status says `done`, call `read_job` for the result and report it: the verdict, the PR,
 the deployed URL, every `created:` item (credentials it set up, so the person can log in
