@@ -237,7 +237,7 @@ The prompt it was created with:
 > Do not call bump_template for a template the check did not say is behind.
 >
 > Then report, in one message, one short block per template you acted on. Each block says: the
-> template, the version it moved from and to, and the draft pull request link. Say plainly in that
+> template, the version it moved from and to, and the pull request link. Say plainly in that
 > message that none of these have been deployed and that nothing has verified they still work, so
 > nobody reads the list as tested.
 >
@@ -252,8 +252,9 @@ Two things to know before you go looking for it:
 
 - **`hermes cron list` does not show it while it is paused.** Use `hermes cron list --all`, and read
   `hermes cron status` as saying only whether the ticker is alive.
-- The prompt above says "draft pull request" because it was written while bumps opened drafts. It
-  is quoted as created, not as it should be. Recreate the cron with that word dropped before it is
-  unpaused, or the weekly message will call ready-for-review pull requests drafts.
+- The prompt is quoted as the job holds it, not as it was first created: it said "draft pull
+  request" until bumps stopped opening drafts, and `hermes cron edit 96df88f73a8a --prompt` put it
+  right. Edit beats remove-and-create here, because it keeps the id, the paused state and the
+  delivery target.
 - `--deliver platform:C0C2THV4Y12` is the home channel, where a person reads. It is not
   `C0B0F6KQ4ES`, which is the channel `ask_for_review` pings and where only bots are listening.
