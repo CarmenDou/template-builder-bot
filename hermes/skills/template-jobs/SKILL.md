@@ -63,9 +63,25 @@ When you do speak, lead with the stage, then what changed:
     [verify] the deck kept its edits across a restart
 
 The stages run triage, manifest, pr, build, deploy, verify, so naming one places the job on that
-line without anyone having to ask. Then the real thing in plain words: "it is reading how Twenty's
-image starts, to see whether the worker needs its own image", not "it ran some commands". Never
-paste the feed, never quote a raw command, never list tool names.
+line without anyone having to ask.
+
+**When one command is the thing that happened, show that command rather than describing it.** A
+person reading `insta compute logs twenty --since 10m` knows exactly what was done and can run it
+themselves. A sentence about it is longer, and it is a claim the agent is making about its own
+behaviour, which can be wrong where the command cannot. Put it in a code block on its own line:
+
+    [deploy] the worker would not start, so it went to the logs
+    ```
+    insta compute logs twenty --since 10m
+    ```
+
+Describe instead of quoting when there is no single command to point at, and say the real thing
+when you do: "it is reading how Twenty's image starts, to see whether the worker needs its own
+image", never "it ran some commands".
+
+Two limits. **Never paste the feed**: one command, the one that matters, not the six around it.
+And **never show a command carrying a credential** (`--password`, a token, a connection string
+with one in it): say what it did and leave the value out. A secret in a channel outlives the job.
 
 If a stage has been running about five minutes, say in one sentence what it is waiting on, a CI run
 or a deploy, so silence never looks like a dead job. That sentence is the exception to the rule
