@@ -3,7 +3,7 @@ import { startJob, readJob, parseResult, listRunningJobs, stopJob, steerJob } fr
 import { fetchThread } from './slack.js';
 
 const HELP = [
-  'I turn a GitHub repository into an InstaCloud template draft PR. A human verifies it and decides whether to publish; I never publish.',
+  'I turn a GitHub repository into an InstaCloud template pull request. A human verifies it and decides whether to publish; I never publish.',
   '',
   '`@template-builder https://github.com/owner/repo` — start a new template',
   '`@template-builder #145 use the small model` — change one I already drafted',
@@ -20,9 +20,9 @@ function repoName(url) {
 export function describeStart({ url, jobId, followup = false }) {
   // A follow-up is always handed the `PR #147` label, never a repository URL.
   if (followup) {
-    return `Picking \`${url}\` back up.\nI push to the same branch, let CI rebuild, redeploy and re-verify, then update the PR body. It stays a draft. (job \`${jobId}\`)`;
+    return `Picking \`${url}\` back up.\nI push to the same branch, let CI rebuild, redeploy and re-verify, then update the PR body. I do not merge it and I do not publish. (job \`${jobId}\`)`;
   }
-  return `On it: \`${repoName(url)}\`\nTriage first, then a draft PR, then a real deploy to verify. Usually 10 to 30 minutes, and I report back here. (job \`${jobId}\`)`;
+  return `On it: \`${repoName(url)}\`\nTriage first, then a pull request, then a real deploy to verify. Usually 10 to 30 minutes, and I report back here. (job \`${jobId}\`)`;
 }
 
 export function describeResult({ url, jobId, exitCode, result, log }) {
@@ -35,7 +35,7 @@ export function describeResult({ url, jobId, exitCode, result, log }) {
     // The deployment first: the first thing a reviewer does is open it and click
     // around. The PR is what they read afterwards, once it looks real.
     if (result.service) lines.push(`Open: ${result.service}`);
-    if (result.pr) lines.push(`Draft PR: ${result.pr}`);
+    if (result.pr) lines.push(`Pull request: ${result.pr}`);
     if (result.project) lines.push(`Project: ${result.project} (kept, not deleted)`);
 
     // The values that exist nowhere else. Template variables are write-only, so

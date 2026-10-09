@@ -200,7 +200,14 @@ the worst thing this file can do, and it is exactly when the person is most curi
 
 Use \`note:\` for something unexpected that changed your plan, and only for that:
 
-    note: a draft PR already existed (#149), so I am continuing that one rather than opening a second
+    note: a pull request already existed (#149), so I am continuing that one rather than opening a second
+
+Use it as well, once, for a fork you had to settle by judgement rather than by what the repository
+says: name the side you took and the one you did not. You are not asking, and you do not wait. The
+person following you can put that choice to somebody and steer you if the answer differs, and they
+can only do it for a fork you named:
+
+    note: nothing says whether the worker ships, so it does, as a second service; the other way is web only
 
 **One sentence each.** These are the only words anybody reads while you work: the detail goes in the
 PR body. Say what you did and what it means, never what you typed.`;
@@ -212,7 +219,7 @@ export function buildTask({ url, extra, dir }) {
   return `Turn ${url} into an InstaCloud template.
 
 Follow your CLAUDE.md end to end: triage it against the five judgements, create a fresh project for
-this job, write the manifest, open a DRAFT PR on InsForge/instacloud-oss, deploy and verify it
+this job, write the manifest, open a pull request on InsForge/instacloud-oss, deploy and verify it
 (the four verdicts under Verifying: reach, enter, round-trip, survive, in the browser when the app
 has one), put the evidence and the entry points in the PR body, then stop. Do not publish.
 
@@ -254,7 +261,7 @@ If what they want changed came from a review, use the fixing-review-feedback ski
 
 Make the change, commit and push to the same branch (pushing is what rebuilds the image), wait for
 the build, redeploy and verify again the same way as the first time, and update the PR body so its
-evidence matches what is now true. Keep it a draft. Do not publish and do not merge.
+evidence matches what is now true. Do not publish and do not merge.
 
 Finish your reply with a section headed RESULT containing, one per line:
   verdict: updated

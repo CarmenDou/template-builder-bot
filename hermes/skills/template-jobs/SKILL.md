@@ -28,15 +28,19 @@ and you are the only one who talks about it in the conversation. The job itself 
 
   **Do not answer with a version number, and do not ask whether to go ahead.** Naming a template is
   the request. Call `bump_template` and answer with what it returns, which is a pull request link.
-  There is nothing to confirm first: what it opens is a DRAFT that nobody has to merge, it opens
-  nothing at all when a bump is already open, and it never deploys. Asking permission turns one
-  message into three and is the experience this tool exists to replace.
+  There is nothing to confirm first: what it opens is a pull request nobody has to merge, it
+  opens nothing at all when a bump is already open, and it never deploys. Asking permission turns
+  one message into three and is the experience this tool exists to replace.
 
 ## Starting
 
 Use `start_template_job` for a repository and `continue_template_pr` for a PR number. Pass the
-person's own words as `instructions`. Say in one sentence that it has started and roughly how long
-it takes, 10 to 30 minutes, and then start following it straight away, in the same turn.
+person's own words as `instructions`, then start following it straight away, in the same turn.
+
+Your opening message is one line: what it has started on, that triage comes back first, and that it
+takes 10 to 30 minutes. Do not spend it describing what you are about to do. The triage line a
+minute later says what the repository turned out to be and which route it took, and a message whose
+only content is that another message is coming is the repetition this skill exists to prevent.
 
 ## Following, until it is done
 
@@ -52,20 +56,46 @@ What comes back since your last look:
 - `said: ...` is the agent narrating
 - `run: ...` and the other lines are the tools it called
 
-**A `stage:` is news. A `note:` is news. Narration is not.** `said:` lines are the agent thinking
-out loud and they arrive the whole time, so a look that brought only those is a look you say
-nothing about. Relaying them turns a twenty minute job into forty messages that each amount to "it
-is still going", and a person reading that still cannot tell how far along it is.
+**Every message you send carries a fact your last one did not: a new stage, a new command, a new
+conclusion. A look that brought none is a look you say nothing about.** Check it before you send,
+against your own previous message, and send nothing when it fails.
 
-When you do speak, lead with the stage, then what changed:
+`said:` lines are the agent thinking out loud, they arrive the whole time, and they almost never
+clear that bar. Relaying them turns a twenty minute job into forty messages that each amount to "it
+is still going", and a person reading that still cannot tell how far along it is. Slack keeps every
+line: Hermes cannot edit a post here the way it rewrites a line in a terminal, so a message that
+added nothing is in the channel for good.
 
-    [pr] opened the draft, CI is running now
-    [verify] the deck kept its edits across a restart
+When you do speak, lead with the stage and its marker, then what changed:
 
-The stages run triage, manifest, pr, build, deploy, verify, so naming one places the job on that
-line without anyone having to ask. Then the real thing in plain words: "it is reading how Twenty's
-image starts, to see whether the worker needs its own image", not "it ran some commands". Never
-paste the feed, never quote a raw command, never list tool names.
+    🔀 pr       opened https://github.com/InsForge/instacloud-oss/pull/231, CI is running now
+    🧪 verify   reach ✓  enter ✓  round-trip ✓  survive ✗  the deck lost its edits across a restart
+
+One marker per stage and always the same one, so somebody scrolling the channel finds the job's
+place before reading a word:
+
+    🔍 triage    📝 manifest    🔀 pr    🏗 build    🚀 deploy    🧪 verify    ⚠️ note
+
+The marker names the stage, never how it went: a verify that failed is still `🧪 verify`, with the
+✗ in the line. A green tick on a line about something broken is worse than no tick at all.
+
+**When one command is the thing that happened, show that command rather than describing it.** A
+person reading `insta compute logs twenty --since 10m` knows exactly what was done and can run it
+themselves. A sentence about it is longer, and it is a claim the agent is making about its own
+behaviour, which can be wrong where the command cannot. Put it in a code block on its own line:
+
+    [deploy] the worker would not start, so it went to the logs
+    ```
+    insta compute logs twenty --since 10m
+    ```
+
+Describe instead of quoting when there is no single command to point at, and say the real thing
+when you do: "it is reading how Twenty's image starts, to see whether the worker needs its own
+image", never "it ran some commands".
+
+Two limits. **Never paste the feed**: one command, the one that matters, not the six around it.
+And **never show a command carrying a credential** (`--password`, a token, a connection string
+with one in it): say what it did and leave the value out. A secret in a channel outlives the job.
 
 If a stage has been running about five minutes, say in one sentence what it is waiting on, a CI run
 or a deploy, so silence never looks like a dead job. That sentence is the exception to the rule
@@ -75,6 +105,31 @@ When the status says `done`, call `read_job` for the result and report it: the v
 the deployed URL, every `created:` item (credentials it set up, so the person can log in
 themselves) and every `ask:` item as a short list of decisions that are theirs to make. Then stop
 following.
+
+## Asking, while it keeps working
+
+The job cannot ask anyone anything. It runs detached on another machine with nobody listening, and
+its own instructions tell it to build rather than stop for a question. So when it reaches a fork it
+takes one side and says which, in the triage line or in a `note:`. You are the only one who can put
+that choice to a person, and the job does not wait while you do.
+
+Use `clarify` when the feed shows a choice a person might overturn: what the template is for,
+whether it ships the worker, how a real limit gets described to somebody deciding whether to
+deploy, which of two logos. Put the side the job already took first, so the tool labels it
+`(Recommended)` and the quiet answer is the one already being built.
+
+- They pick what the job chose, or nobody answers: say nothing more. Work carries on.
+- They pick the other side: `steer_job` in their words, not your summary, and say in one line that
+  you did.
+
+Nobody has to answer. When the time limit passes `clarify` returns "use your best judgement and
+proceed", and here that means the fork is already settled the way the job settled it.
+
+**Never ask for permission.** "Shall I open the pull request", "shall I bump it", "want me to
+re-run CI" are not forks, they are the job. A question you already have the answer to is the
+going-in-circles this skill exists to stop.
+
+Most jobs reach no fork worth a question. One route, taken, said out loud, is the normal shape.
 
 ## When the person speaks while you are following
 
@@ -144,7 +199,7 @@ or a browser. Then follow it with `follow_job` from the offset and stages the re
 **Ending your turn does not stop the job.** It runs on another machine and carries on whether
 anyone is watching or not, so a "stop" answered only with words leaves it running unobserved.
 
-## After a person has looked at the draft
+## After a person has looked at the pull request
 
 Only when they say to send it for review: `ask_for_review` with stage `review`, then `review_status`
 with the `asked at` time from its reply, and tell them in a sentence or two what Codex found. When
@@ -197,5 +252,8 @@ Two things to know before you go looking for it:
 
 - **`hermes cron list` does not show it while it is paused.** Use `hermes cron list --all`, and read
   `hermes cron status` as saying only whether the ticker is alive.
+- The prompt above says "draft pull request" because it was written while bumps opened drafts. It
+  is quoted as created, not as it should be. Recreate the cron with that word dropped before it is
+  unpaused, or the weekly message will call ready-for-review pull requests drafts.
 - `--deliver platform:C0C2THV4Y12` is the home channel, where a person reads. It is not
   `C0B0F6KQ4ES`, which is the channel `ask_for_review` pings and where only bots are listening.

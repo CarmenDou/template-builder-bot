@@ -1619,11 +1619,11 @@ test('the body says plainly what was not done, and claims nothing was deployed, 
     assert.doesNotMatch(rest, /\btested\b(?! in this repository)/i, `${applied.code}: nor a test of this change`);
     assert.doesNotMatch(rest, /\b(passed|passes|works|working|succeeded|green)\b/i, `${applied.code}: nor a result`);
   }
-  // The checks are pending when a draft is opened. Nothing has run.
+  // The checks are pending when the pull request is opened. Nothing has run yet.
   const body = prBody(APPLIED);
   assert.match(body, /`npm run lint` and `npm run version-guard`/);
   assert.match(body, /pending when it is opened/);
-  assert.doesNotMatch(body, /checks that ran|have run|has run/i, 'nothing has run when a draft is opened');
+  assert.doesNotMatch(body, /checks that ran|have run|has run/i, 'nothing has run when it is opened');
 });
 
 test('the body says the push also runs the image build, next to the sentence about CI', () => {
@@ -1641,9 +1641,11 @@ test('the body says the push also runs the image build, next to the sentence abo
   }
 });
 
-test('the pull request is a DRAFT against main, from the branch that was pushed, and the body write must succeed first', () => {
+test('the pull request is ready for review against main, from the branch that was pushed, and the body write must succeed first', () => {
   const s = openPrScript('n8n', APPLIED, PUSHED);
-  assert.match(s, /--draft/, 'never a ready-for-review pull request');
+  // Codex reviews a pull request when it is ready, not while it is a draft, and a bump nobody
+  // reviews is a bump nobody merges. The flag going back in would be silent, so it is asserted.
+  assert.doesNotMatch(s, /--draft/, 'never a draft');
   assert.match(s, /--base main/);
   assert.match(s, / --head feat\/n8n-2\.42\.0 /);
   assert.match(s, /--repo InsForge\/instacloud-oss/);
@@ -1658,12 +1660,12 @@ test('the pull request is a DRAFT against main, from the branch that was pushed,
   assert.equal(spawnSync('sh', ['-n'], { input: s, encoding: 'utf8' }).status, 0);
 });
 
-test('run for real: gh is given a draft, a title and the body whole, quotes and backticks and all', async (t) => {
+test('run for real: gh is given a title and the body whole, quotes and backticks and all, and no --draft', async (t) => {
   const r = await withGh(t, openPrScript('n8n', APPLIED, PUSHED), { stdout: `${NEW_PR}\n` });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, `${NEW_PR}\n`);
   assert.deepEqual(r.argv, [
-    'pr', 'create', '--repo', 'InsForge/instacloud-oss', '--draft', '--base', 'main', '--head', PUSHED,
+    'pr', 'create', '--repo', 'InsForge/instacloud-oss', '--base', 'main', '--head', PUSHED,
     '--title', 'n8n 2.36.5 -> 2.42.0', '--body-file', `${r.dir}/bump-n8n.md`,
   ]);
   assert.equal(r.body, prBody(APPLIED));
@@ -1926,7 +1928,7 @@ test('a create that worked is not followed by a look', async () => {
 
 test('a url is taken from the line gh printed it on, with whatever else came with it', async () => {
   const out = await openBumpPr({}, 'n8n', APPLIED, PUSHED, {
-    run: asking((s) => ({ stdout: isCreate(s) ? `Creating draft pull request for ${PUSHED} into main\n\n${NEW_PR}\n` : '' })),
+    run: asking((s) => ({ stdout: isCreate(s) ? `Creating pull request for ${PUSHED} into main\n\n${NEW_PR}\n` : '' })),
   });
   assert.equal(out.url, NEW_PR);
 });

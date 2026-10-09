@@ -49,7 +49,7 @@ test('the follow-up task recovers context from the PR, not from memory', () => {
   assert.match(task, /gh pr view 145/, 'must read the PR to find the branch');
   assert.match(task, /FRESH job directory/, 'must not reuse another job clone');
   assert.match(task, /use small/);
-  assert.match(task, /Keep it a draft/);
+  assert.match(task, /Do not publish and do not merge/);
   assert.match(task, /do not merge/i);
 });
 
@@ -73,5 +73,5 @@ test('handler routes a PR mention into a follow-up job', async () => {
   assert.equal(got.pr, 145);
   assert.equal(got.url, undefined, 'a follow-up carries no repo url');
   assert.match(out.reply, /Picking `PR #145` back up/);
-  assert.match(out.reply, /stays a draft/);
+  assert.match(out.reply, /I do not merge it and I do not publish/);
 });
