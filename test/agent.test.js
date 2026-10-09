@@ -156,6 +156,23 @@ test('the runner reinstalls browser libraries after a restart wiped the root dis
   assert.match(runner, /dpkg -s libnss3/, 'cheap check first');
   assert.match(runner, /playwright@\S+ install --with-deps chromium/, 'the full install only when something is missing');
   assert.ok(runner.indexOf('dpkg -s') < runner.indexOf('claude -p'), 'the check runs before claude starts');
+
+  // The insta skill is a snapshot of whichever CLI wrote it, and the CLI updates itself, so the
+  // box drifts into reasoning from rules the platform has since changed.
+  assert.match(runner, /insta agent setup -y/, 'the skill is refreshed from the CLI that is installed');
+  assert.ok(
+    runner.indexOf('insta agent setup') < runner.indexOf('claude -p'),
+    'refreshed before the agent reads it, not after',
+  );
+  // Keyed on the version, so it costs one string compare per job and a network round trip only
+  // when the CLI actually moved. A timestamp or an unconditional run would pay it every time.
+  assert.match(runner, /\.insta-version/, 'the last version it was refreshed for is remembered');
+  assert.match(
+    runner,
+    /insta agent setup -y[^\n]*\\\n\s*&& printf %s "\$INSTA_V" > [^\n]*\.insta-version/,
+    'the marker is written only when setup succeeded, so a failure retries next job',
+  );
+  assert.doesNotMatch(runner, /insta agent setup[^\n]*--env/, 'never switches the saved environment');
 });
 
 test('the verify stage is four verdicts, not prose', () => {
