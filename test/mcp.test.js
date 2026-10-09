@@ -589,7 +589,7 @@ test('the check for a tool that is not offered catches every spelling of a name,
   // Without this, the tests below could be green because the check finds nothing at all. The name is
   // made up on purpose: a real one would stop being absent the day somebody builds it.
   for (const said of [
-    'frobnicate_widget(code) opens a draft PR',
+    'frobnicate_widget(code) opens a pull request',
     'call frobnicate-widget for it',
     'call frobnicateWidget for it',
     'use `frobnicate_widget`',
@@ -718,7 +718,7 @@ const DENIALS = [
 // Any way of saying a push did not happen, which is false wherever a branch was pushed.
 const SAYS_NOT_PUSHED = /\b(nothing|no|not|never)\b[^.\n]{0,40}\bpush/i;
 
-test('bump_template asks whether a bump is open before it pushes anything, then opens a draft pull request', async () => {
+test('bump_template asks whether a bump is open before it pushes anything, then opens a pull request', async () => {
   const { out, calls, handed, said } = await bumpTool({ code: 'n8n' });
   // The whole array: a subset or a set check would pass the very order this exists to forbid.
   assert.deepEqual(calls, ['open?:n8n', 'bump:n8n', 'pr:n8n']);
@@ -726,7 +726,7 @@ test('bump_template asks whether a bump is open before it pushes anything, then 
   assert.deepEqual(handed.bump, [config, 'n8n']);
   assert.deepEqual(handed.pr, [config, 'n8n', APPLIED, BRANCH], 'the pull request is for what was patched, on the branch that was pushed');
   assert.match(said, /^n8n 2\.36\.5 -> 2\.41\.3 \(minor\), template 1\.3\.2 -> 1\.4\.0$/m);
-  assert.match(said, /^Draft pull request: https:\/\/github\.com\/InsForge\/instacloud-oss\/pull\/192$/m);
+  assert.match(said, /^Pull request: https:\/\/github\.com\/InsForge\/instacloud-oss\/pull\/192$/m);
   assert.match(said, DENIALS[0], 'Hermes must not claim this was tested');
   assert.equal(out.result.content.length, 1);
   assert.equal(out.result.isError, undefined);
@@ -751,7 +751,7 @@ test('a bump that is already open is answered with its link, and nothing is bump
     // Somebody may have continued that pull request and deployed it since, so it is not called untested.
     assert.doesNotMatch(said, DENIALS[0]);
     assert.doesNotMatch(said, /->/, 'no move is named, because none was worked out');
-    assert.doesNotMatch(said, /Draft pull request/);
+    assert.doesNotMatch(said, /^Pull request:/m);
     assert.equal(out.result.isError, undefined);
   }
 });
@@ -760,7 +760,7 @@ test('a pull request that appeared while the bump ran is said to hold the branch
   const { out, calls, said } = await bumpTool({ code: 'n8n' }, { pr: { existing: OLD_PR } });
   assert.deepEqual(calls, ['open?:n8n', 'bump:n8n', 'pr:n8n']);
   assert.match(said, /^n8n 2\.36\.5 -> 2\.41\.3 \(minor\), template 1\.3\.2 -> 1\.4\.0$/m);
-  // A whole line, so nothing can stand between the words and the link, "Draft pull request:" included.
+  // A whole line, so nothing can stand between the words and the link, "Pull request:" included.
   assert.ok(said.split('\n').includes(`A bump pull request for n8n appeared while this bump was running: ${OLD_PR}`));
   assert.match(said, /pushed feat\/n8n-2\.41\.3, which is that pull request's branch/);
   assert.match(said, /no second pull request was opened/);
@@ -857,7 +857,7 @@ test('whatever bump_template says, it says nothing untrue about testing and name
 test('bump_template is described so that nobody needs a skill to use it', () => {
   const tool = TOOLS.find((t) => t.name === 'bump_template');
   const d = tool.description;
-  assert.match(d, /open a DRAFT pull request with the result/);
+  assert.match(d, /open a pull request with the result/);
   assert.match(d, /Every edit is made by the registry's own patcher and none is written by hand/);
   assert.match(d, /refuses rather than leave a file half edited/);
   // The patcher reads live registries, so the same command later can write a different patch.

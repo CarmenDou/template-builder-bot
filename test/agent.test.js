@@ -20,7 +20,8 @@ test('the task names the repo and forbids publishing', () => {
   const task = buildTask({ url: 'https://github.com/a/b' });
   assert.match(task, /https:\/\/github\.com\/a\/b/);
   assert.match(task, /Do not publish/);
-  assert.match(task, /DRAFT PR/);
+  assert.match(task, /open a pull request on InsForge\/instacloud-oss/);
+  assert.doesNotMatch(task, /draft/i, 'the job opens one that Codex will review');
 });
 
 test('extra instructions are passed through', () => {
@@ -162,6 +163,15 @@ test('the verify stage is four verdicts, not prose', () => {
   const text = stageInstructions('/data/work/jobs/J1');
   assert.match(text, /verify: reach ✓\s+enter ✓\s+round-trip ✓\s+survive ✓/);
   assert.match(text, /never free text/);
+});
+
+// The skill's clarify rule has nothing to offer a person unless the job names the fork it settled,
+// and the two files are edited apart, so the contract between them is pinned here.
+test('a fork settled by judgement is named in a note, with the side not taken', () => {
+  const text = stageInstructions('/data/work/jobs/J1');
+  assert.match(text, /fork you had to settle by judgement/);
+  assert.match(text, /name the side you took and the one you did not/);
+  assert.match(text, /You are not asking, and you do not wait/, 'the job never blocks on an answer');
 });
 
 // Any file the outer script ships as base64, decoded.

@@ -20,7 +20,7 @@ const TOOLS = [
   {
     name: 'start_template_job',
     description:
-      'Turn a GitHub repository into an InstaCloud template: triage, manifest, a DRAFT pull request, one real deploy, and verification. Takes 10 to 30 minutes and says nothing on its own: whoever starts it follows it with job-feed, or read_job. REFUSES if a job is already running on that repository, because two agents on one branch overwrite each other; steer_job that one instead.',
+      'Turn a GitHub repository into an InstaCloud template: triage, manifest, a pull request, one real deploy, and verification. Takes 10 to 30 minutes and says nothing on its own: whoever starts it follows it with job-feed, or read_job. REFUSES if a job is already running on that repository, because two agents on one branch overwrite each other; steer_job that one instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -36,7 +36,7 @@ const TOOLS = [
   {
     name: 'continue_template_pr',
     description:
-      'Pick a template pull request back up and change it: same branch, CI rebuild, redeploy, re-verify, PR body updated. It stays a draft. REFUSES if a job is already running on that PR; steer_job that one instead.',
+      'Pick a template pull request back up and change it: same branch, CI rebuild, redeploy, re-verify, PR body updated. It does not merge and it does not publish. REFUSES if a job is already running on that PR; steer_job that one instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -150,7 +150,7 @@ const TOOLS = [
   {
     name: 'check_template_upstream',
     description:
-      'What each published template pins, and what its upstream has released since. Read only as to the repository it reports on: no pull request is opened and no pin is moved. A call does refresh a shared checkout of instacloud-oss on the agent box (a hard reset and an npm install) under an exclusive lock, so it takes a few seconds and one or two HTTP calls per template, and a call made while another runs waits for it, and gives up with an error after a short while. Call it with no code for the whole registry, which is the cheap question worth asking whenever nobody has named a template. When somebody HAS named one, call bump_template instead, whatever the wording: it answers the same question and ends with a draft pull request rather than a version number a person then has to act on. A template it cannot resolve is reported as unknown with the reason, never guessed.',
+      'What each published template pins, and what its upstream has released since. Read only as to the repository it reports on: no pull request is opened and no pin is moved. A call does refresh a shared checkout of instacloud-oss on the agent box (a hard reset and an npm install) under an exclusive lock, so it takes a few seconds and one or two HTTP calls per template, and a call made while another runs waits for it, and gives up with an error after a short while. Call it with no code for the whole registry, which is the cheap question worth asking whenever nobody has named a template. When somebody HAS named one, call bump_template instead, whatever the wording: it answers the same question and ends with a pull request rather than a version number a person then has to act on. A template it cannot resolve is reported as unknown with the reason, never guessed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -164,7 +164,7 @@ const TOOLS = [
   {
     name: 'bump_template',
     description:
-      "Move one published template forward to the version its upstream has released, and open a DRAFT pull request with the result. Every edit is made by the registry's own patcher and none is written by hand, and it refuses rather than leave a file half edited when one is not what it expected. Usually takes under a minute: a call made while another bump of the same template runs waits for it, and gives up with an error after a short while. It does NOT deploy the result and nothing verifies that the template still works, so never say it was tested. Pushing the branch also runs that repository's image build, which publishes container images to GHCR under tags for the branch and commit, and because a new branch has no base to compare against, that first run rebuilds every template that ships its own image. It first asks whether a bump pull request for this template is already open, and if one is it answers with that link and pushes and opens nothing. A template that is already up to date opens nothing and says so.",
+      "Move one published template forward to the version its upstream has released, and open a pull request with the result. Every edit is made by the registry's own patcher and none is written by hand, and it refuses rather than leave a file half edited when one is not what it expected. Usually takes under a minute: a call made while another bump of the same template runs waits for it, and gives up with an error after a short while. It does NOT deploy the result and nothing verifies that the template still works, so never say it was tested. Pushing the branch also runs that repository's image build, which publishes container images to GHCR under tags for the branch and commit, and because a new branch has no base to compare against, that first run rebuilds every template that ships its own image. It first asks whether a bump pull request for this template is already open, and if one is it answers with that link and pushes and opens nothing. A template that is already up to date opens nothing and says so.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -393,11 +393,11 @@ async function callTool(config, name, args, deps) {
       // agent called this, saw "This check only reports", and asked for permission to bump.
       const nextStep = asked
         ? `Call bump_template for ${asked} now, and answer with the pull request link it returns.`
-          + ' Do not ask whether to go ahead: it opens a DRAFT nobody has to merge, it opens nothing'
+          + ' Do not ask whether to go ahead: it opens a pull request nobody has to merge, it opens nothing'
           + ' when a bump is already open, and it never deploys.'
         : 'Call bump_template for each of them, ONE AT A TIME, waiting for each to answer before'
           + ' starting the next, and answer with the pull request link each one returns. Do not ask'
-          + ' whether to go ahead: each opens a DRAFT nobody has to merge, and none of them deploys.';
+          + ' whether to go ahead: each opens a pull request nobody has to merge, and none deploys.';
       return text(describeDrift(rows, { nextStep }));
     }
 

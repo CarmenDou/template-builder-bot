@@ -51,7 +51,7 @@ test('starts the job and says what will happen', async () => {
   assert.equal(started.url, 'https://github.com/a/b');
   assert.equal(out.job.jobId, 'J9');
   assert.match(out.reply, /J9/);
-  assert.match(out.reply, /draft PR/i);
+  assert.match(out.reply, /then a pull request/i);
 });
 
 test('carries who asked, because this is the only moment anyone knows', async () => {
@@ -198,7 +198,7 @@ test('describeResult omits links the agent did not provide', () => {
     log: '',
   });
   assert.match(text, /out/);
-  assert.ok(!text.includes('Draft PR'), 'no PR line when there is no PR');
+  assert.ok(!text.includes('Pull request:'), 'no PR line when there is no PR');
   assert.ok(!text.includes('undefined'));
 });
 

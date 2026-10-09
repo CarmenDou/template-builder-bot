@@ -422,8 +422,9 @@ export function prBody(applied) {
 }
 
 /**
- * Shell that writes the body to a file and asks gh to open a DRAFT pull request from `branch` into
- * main.
+ * Shell that writes the body to a file and asks gh to open a pull request from `branch` into main.
+ * Ready for review, not a draft: a draft is not what Codex picks up, and a bump nobody reviews is a
+ * bump nobody merges.
  *
  * Throws unless the code, all four versions and the branch are what this tool would have named. They
  * are spliced into a shell command and a title, and this is exported and can be reached without
@@ -461,7 +462,7 @@ export function openPrScript(code, applied, branch) {
     // The redirect truncates the file before anything is written to it, so a write that fails part
     // way has to stop here, or gh opens a real pull request on a public repository with half a body.
     `printf '%s' '${body64}' | base64 -d > /tmp/bump-${code}.md || exit 1`,
-    `${GH} pr create --repo ${REPO} --draft --base main --head ${branch} --title '${title}' --body-file /tmp/bump-${code}.md`,
+    `${GH} pr create --repo ${REPO} --base main --head ${branch} --title '${title}' --body-file /tmp/bump-${code}.md`,
   ].join('\n');
 }
 
@@ -546,7 +547,7 @@ export function describeBump({ applied, code, url, existing, stranded }) {
   const move = `${applied.code} ${applied.upstream.from} -> ${applied.upstream.to}`
     + `${applied.level ? ` (${applied.level})` : ''}, template ${applied.version.from} -> ${applied.version.to}`;
   if (url) {
-    return `${move}\n\nDraft pull request: ${url}\n\nThe diff was made by the registry's own patcher. ${UNTESTED}`
+    return `${move}\n\nPull request: ${url}\n\nThe diff was made by the registry's own patcher. ${UNTESTED}`
       + " CI runs the repository's lint and version guard on it.";
   }
   if (stranded) {
