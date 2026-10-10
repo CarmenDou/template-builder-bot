@@ -211,7 +211,10 @@ either bot on your own because a job finished.
 
 There is a cron job on this box, `template-upstream-weekly`, that runs the same path every Monday at
 09:00 UTC. Nobody triggers it and it has no thread to reply into, so its prompt is self-contained
-and it delivers to the Slack home channel. It is **paused** until its owner has watched it once.
+and it delivers to the Slack home channel. It is **live** from 2026-10-12: it was paused from the
+day it was built, because a branch's first push used to rebuild every template that ships an image,
+so a Monday with sixteen behind cost hundreds of builds. instacloud-oss#240 made a branch build only
+what it changed, which left one build per template actually bumped.
 
 It is not a different feature from someone asking. It calls the same two tools in the same order,
 and the only difference is who started it.
@@ -250,8 +253,10 @@ The prompt it was created with:
 
 Two things to know before you go looking for it:
 
-- **`hermes cron list` does not show it while it is paused.** Use `hermes cron list --all`, and read
-  `hermes cron status` as saying only whether the ticker is alive.
+- **`hermes cron list --all` is what shows a paused job.** Plain `list` hides one, and
+  `hermes cron status` says only whether the ticker is alive, not whether this job is.
+- **Pausing it is one command**, `hermes cron pause template-upstream-weekly`, and resuming re-arms
+  it at the next Monday rather than firing the slot it slept through.
 - The prompt is quoted as the job holds it, not as it was first created: it said "draft pull
   request" until bumps stopped opening drafts, and `hermes cron edit 96df88f73a8a --prompt` put it
   right. Edit beats remove-and-create here, because it keeps the id, the paused state and the
